@@ -1,0 +1,200 @@
+\documentclass{article}
+
+% Language setting
+% Replace `english' with e.g. `spanish' to change the document language
+\usepackage[magyar]{babel}
+
+% Set page size and margins
+% Replace `letterpaper' with `a4paper' for UK/EU standard size
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=3cm,right=3cm,marginparwidth=1.75cm]{geometry}
+
+% Useful packages
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\title{SNSPD karakterizációja}
+\author{Mark Fauszt}
+
+\begin{document}
+\maketitle
+
+\section{Források}
+Dark Count Rate:
+\begin{itemize}
+    \item  \href{https://arxiv.org/abs/2508.10816} {sötét beütés, részletes képletek, modellezhetőség, jitter ismertető}
+    Célja:
+        Karakterizálás
+        Pontos leírása és előrejelzése a detektornak
+        Olyan modell alkotása, ami egyszerre tudta volna kezelni a detektálási hatékonyságot és a sötét számlálási sebességet
+    Eredménye:
+        Vortex-átkelési elmélet modellezése
+        Detektálási görbék és leírásaik
+        Hőmérséklet függés és detektálási eltolódás kirajzolása, megjósolása
+    Modellhez értékek:
+        Kritikus hőmérséklet: A szupravezetés megszűnésének pontja.
+        Energiarés: Ez határozza meg a kvázirészecskék keltéséhez szükséges minimális energiát.
+        Koherencia-hossz: A szupravezetési rendparaméter térbeli változásának jellemző hossza
+        ??? Penetrációs mélység: Amilyen mélyen a mágneses tér behatol a szupravezetőbe.
+        Szélesség
+        Vastagság
+        Bias áram
+        Üzemi hőmérséklet
+        Foton hullámhossza
+        -> Tudjuk használni
+    Összefoglaló:
+        A cikkben egy "Vortex Crossing Theory" nevű keretrendszert javasol, amely hidat képez a mikroszkopikus szupravezető fizika és a mérnöki detektor-karakterizálás között. Azt sugallja, hogy a detektorok teljesítményét nem csak a gyártási pontosság, hanem alapvető statisztikus fizikai korlátok (a vortexek mozgása) határozzák meg.
+        Az elsődleges célja a pontos leírés és megjövendőlése a detektornak és egyben kezeli a detektálási hatékonyságot (SDE) és a sötét számlálási sebességet (DCR).
+        A fizikai alapja az elméletnek a Vertex-mechanizmus, mely a foton becsapódása utáni mágneses örvény keletkezésén és vándorlásán alapul. A kutatás szerint ez tud akár téves detektálást is létrehozni. Bár a vortex a detektálásnál hasznos, mert erősíti a becsapódott foton által létrehozott ellenállást is.
+        Majd felépít egy modellt, mely a legtöbb snspd-re alkalmazható, hogy megjósolja a múködését SDE és DCR lehetséges értékeit. A cikkben továbbá részletezik a "SDE-plató" jelenséget és a hőmérsékleti függőséget
+        A kutatás fő eredménye egy modell, mely segít beállítani és karakterizálni a snspd-ket pl.: bias áram optimalizálása...
+    \item \href{https://opg.optica.org/ol/fulltext.cfm?uri=ol-40-14-3428} {2}
+    \item \href{https://www.sciencedirect.com/science/article/pii/S2772830722000059} {3}
+\end{itemize}
+Detection Efficiency:
+\begin{itemize}
+    \item \href{https://opg.optica.org/abstract.cfm?uri=optica-7-12-1649} {1}
+    \item \href{https://www.idquantique.com/quantum-detection-systems/snspd-technology/} {2}
+    \item \href{https://www.researching.cn/articles/OJ159335bcc4f46a7d} {3}
+\end{itemize}
+Dead Time:
+\begin{itemize}
+    \item \href{https://www.photonspot.com/detectors} {1}
+    \item \href{https://www.swabianinstruments.com/applications/photon-number-resolution/} {2}
+    \item \href{https://arxiv.org/abs/2508.11832} {3}
+\end{itemize}
+Afterimpulse:
+\begin{itemize}
+    \item \href{https://link.aps.org/doi/10.1103/PhysRevB.108.054507} 1
+    \item \href{https://arxiv.org/abs/2303.17861} 2
+    \item \href{https://pubs.aip.org/aip/jap/article/113/21/213102/371499/Investigations-of-afterpulsing-and-detection} 3
+\end{itemize}
+Timing Jitter:
+\begin{itemize}
+    \item \href{https://link.aps.org/doi/10.1103/PhysRevApplied.11.034062} 1
+    \item \href{https://arxiv.org/pdf/1308.0763} 2
+    \item \href{https://pubs.aip.org/aip/apl/article/122/4/044001/2870246/Time-walk-and-jitter-correction-in-SNSPDs-at-high} 3
+\end{itemize}
+Characterization:
+\begin{itemize}
+    \item \href{https://arxiv.org/pdf/1810.11256} 1
+    \item \href{https://www.nature.com/articles/s41598-024-81776-2} 2
+    \item \href{https://ieeexplore.ieee.org/document/10655273/} 3
+\end{itemize}
+Other:
+\begin{itemize}
+    \item \ref{opt:5 Optical receivers} 5 Optical receivers.pdf
+\end{itemize}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{5 Optical receivers.pdf}
+    \caption{Fájlok között lehet megnyitni}
+    \label{opt:5 Optical receivers}
+\end{figure}
+
+\section{Gondolatok, ötletek}
+SNSPD adatai (amiket megtaláltam)
+\begin{figure}
+    \item Kritikus hőmérséklet: 
+    \item Energiarés: 
+    \item Koherencia-hossz: 
+    \item Penetrációs mélység: 
+    \item Szélsesség: 30cm
+    \item Vastagság: 30cm
+    \item Bias áram: 15 $\mu$A és 27 $\mu$A
+    \item Üzemi hőmérséklet: 0,8K
+    \item Foton hullámhossz: < 500 nm és > 2000 nm
+\end{figure}
+\section{ToDos}
+cél, eredmény, hogyan tudom felhasználni, vázlat hogy majd összefüggő legyen
+\begin{enumerate}
+    \item kalkulások és becslések lehetségesek-e? Miket vár a model (tudjuk-e használni)
+    \item id281 snspd megnézni az adatokat, tudjuk-e használni (teams)
+    \item összefoglaló az első forrásból
+    \item teams cikk olvasás (1foton forrás, detektálók)
+    \item első forrásból kigyűjteni a zajt és meglepő dolgokat
+\end{enumerate}
+
+
+\subsection{How to create Sections and Subsections}
+
+Simply use the section and subsection commands, as in this example document! With Overleaf, all the formatting and numbering is handled automatically according to the template you've chosen. If you're using the Visual Editor, you can also create new section and subsections via the buttons in the editor toolbar.
+
+\subsection{How to include Figures}
+
+First you have to upload the image file from your computer using the upload link in the file-tree menu. Then use the includegraphics command to include it in your document. Use the figure environment and the caption command to add a number and a caption to your figure. See the code for Figure  in this section for an example.
+
+Note that your figure will automatically be placed in the most appropriate place for it, given the surrounding text and taking into account other figures or tables that may be close by. You can find out more about adding images to your documents in this help article on \href{https://www.overleaf.com/learn/how-to/Including_images_on_Overleaf}{including images on Overleaf}.
+
+
+
+\subsection{How to add Tables}
+
+Use the table and tabular environments for basic tables --- see Table~\ref{tab:widgets}, for example. For more information, please see this help article on \href{https://www.overleaf.com/learn/latex/tables}{tables}.
+
+\begin{table}
+\centering
+\begin{tabular}{l|r}
+Item & Quantity \\\hline
+Widgets & 42 \\
+Gadgets & 13
+\end{tabular}
+\caption{\label{tab:widgets}An example table.}
+\end{table}
+
+\subsection{How to add Comments and Track Changes}
+
+Comments can be added to your project by highlighting some text and clicking ``Add comment'' in the top right of the editor pane. To view existing comments, click on the Review menu in the toolbar above. To reply to a comment, click on the Reply button in the lower right corner of the comment. You can close the Review pane by clicking its name on the toolbar when you're done reviewing for the time being.
+
+Track changes are available on all our \href{https://www.overleaf.com/user/subscription/plans}{premium plans}, and can be toggled on or off using the option at the top of the Review pane. Track changes allow you to keep track of every change made to the document, along with the person making the change.
+
+\subsection{How to add Lists}
+
+You can make lists with automatic numbering \dots
+
+\begin{enumerate}
+\item Like this,
+\item and like this.
+\end{enumerate}
+\dots or bullet points \dots
+\begin{itemize}
+\item Like this,
+\item and like this.
+\end{itemize}
+
+\subsection{How to write Mathematics}
+
+\LaTeX{} is great at typesetting mathematics. Let $X_1, X_2, \ldots, X_n$ be a sequence of independent and identically distributed random variables with $\text{E}[X_i] = \mu$ and $\text{Var}[X_i] = \sigma^2 < \infty$, and let
+\[S_n = \frac{X_1 + X_2 + \cdots + X_n}{n}
+      = \frac{1}{n}\sum_{i}^{n} X_i\]
+denote their mean. Then as $n$ approaches infinity, the random variables $\sqrt{n}(S_n - \mu)$ converge in distribution to a normal $\mathcal{N}(0, \sigma^2)$.
+
+
+\subsection{How to change the margins and paper size}
+
+Usually the template you're using will have the page margins and paper size set correctly for that use-case. For example, if you're using a journal article template provided by the journal publisher, that template will be formatted according to their requirements. In these cases, it's best not to alter the margins directly.
+
+If however you're using a more general template, such as this one, and would like to alter the margins, a common way to do so is via the geometry package. You can find the geometry package loaded in the preamble at the top of this example file, and if you'd like to learn more about how to adjust the settings, please visit this help article on \href{https://www.overleaf.com/learn/latex/page_size_and_margins}{page size and margins}.
+
+\subsection{How to change the document language and spell check settings}
+
+Overleaf supports many different languages, including multiple different languages within one document.
+
+To configure the document language, simply edit the option provided to the babel package in the preamble at the top of this example project. To learn more about the different options, please visit this help article on \href{https://www.overleaf.com/learn/latex/International_language_support}{international language support}.
+
+To change the spell check language, simply open the Overleaf menu at the top left of the editor window, scroll down to the spell check setting, and adjust accordingly.
+
+\subsection{How to add Citations and a References List}
+
+You can simply upload a \verb|.bib| file containing your BibTeX entries, created with a tool such as JabRef. You can then cite entries from it, like this: \cite{greenwade93}. Just remember to specify a bibliography style, as well as the filename of the \verb|.bib|. You can find a \href{https://www.overleaf.com/help/97-how-to-include-a-bibliography-using-bibtex}{video tutorial here} to learn more about BibTeX.
+
+If you have an \href{https://www.overleaf.com/user/subscription/plans}{upgraded account}, you can also import your Mendeley or Zotero library directly as a \verb|.bib| file, via the upload menu in the file-tree.
+
+\subsection{Good luck!}
+
+We hope you find Overleaf useful, and do take a look at our \href{https://www.overleaf.com/learn}{help library} for more tutorials and user guides! Please also let us know if you have any feedback using the \textbf{Contact us} link at the bottom of the Overleaf menu --- or use the contact form at \url{https://www.overleaf.com/contact}.
+
+\bibliographystyle{alpha}
+\bibliography{sample}
+
+\end{document}
