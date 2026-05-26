@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="utf-8" />
+    <title>Grover-szimulátor — vizuális demó</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.3.0/dist/chart.umd.min.js"></script>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 8px; background: linear-gradient(to bottom right, #e0f7fa, #80deea); min-height: 100vh;}
+      header { display:flex; gap:12px; align-items:center; margin-bottom:4px; background:fixed;}
+      h1 { font-size:20px; margin:0; }
+      .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+      .card { background: fixes; border-radius:8px; padding:10px; box-shadow:0 2px 8px rgba(20,20,30,0.06); }
+      #main { display:grid; grid-template-columns: 1fr 420px; gap:12px; align-items:start; }
+      #left { display:flex; flex-direction:column; gap:12px; }
+      canvas { background:linear-gradient(#bbb,#f9fbfd); border-radius:6px; }
+      label { font-size:13px; display:inline-block; margin-right:2px; }
+      input[type=number] { width:80px; }
+      .small { font-size:13px; color:#333; }
+      footer { margin-top:8px; font-size:8px; color:#666; }
+      #documentation {
+        display:none;
+        max-width:800px;
+        margin:0 auto;
+        background:fixed;
+        border-radius:8px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.1);
+        padding:20px;
+        line-height:1.6;
+      }
+      .doc-page { display:none; }
+      .doc-page.active { display:block; }
+      .doc-nav { margin-top:20px; display:flex; justify-content:space-between; }
+      .doc-nav button { padding:6px 12px; border:none; border-radius:6px; background:#AAA; color:fixed; cursor:pointer; }
+      .doc-nav button:hover { background:#666; }
+    </style>
+  </head>
+<body>
+  <header>
+    <h1 id="pageTitle">Grover-szimulátor — vizuális demó</h1>
+    <div class="small">Készítve: Fauszt Márk UTYEC2</div>
+    <button id="dok">Dokumentáció</button>
+  </header>
+
+    <div id="simulator">
+      <div class="controls card">
+        <table style="border-collapse: collapse;">
+          <tr>
+            <th style="border:1px solid #333; padding:4px;">Inicializálás</th>
+            <th style="border:1px solid #333; padding:4px;">Léptetés</th>
+            <th style="border:1px solid #333; padding:4px;">Léptetés k-val</th>
+            <th style="border:1px solid #333; padding:4px;">Állapot</th>
+          </tr>
+          <tr>
+            <td style="border:1px solid #333;">
+              <label>N (adatbázis mérete, 2^n): <input id="inputN" type="number" min="2" value="15"></label>
+              <label>M (jelölt elemek száma): <input id="inputM" type="number" min="1" value="1"></label>
+              <button id="btnInit">Inicializál</button>
+              <button id="btnRandom">Véletlen orákulum</button>
+            </td>
+            <td style="border:1px solid #333;">
+              <button id="btnStep">Egy lépés</button>
+              <button id="btnAuto">Auto: Start</button>
+            </td>
+            <td nowrap style="border:1px solid #333;">
+              <label> k = <input id="inputK" type="number" step="0.01" min="0.01" value="1" style="width:60px"></label>
+              <button id="btnIter">Alkalmaz</button>
+              <button id="btnAuto2">Auto k: Start</button>
+            </td>
+            <td style="border:1px solid #333;">
+              <button id="modeBtn">Pontos számítás</button>
+              <button id="btnReset">Reset</button>
+              <div class="small" style="margin-top:6px;">Állapot: <span id="status">inicializálva</span></div>
+            </td>
+          </tr>
+        </table>
+      </div>
+      
+      <div id="main">
+        <div id="left">
+          <div class="card">
+            <h3 style="margin:0 0 4px 0">1) Amplitúdók (oszlopdiagram)</h3>
+            <canvas id="ampChart" height="175"></canvas>
+          </div>
+        </div>
+        <div id="right" class="card">
+          <h3 style="margin-top:0">Információ</h3>
+          <div class="small" id="infoBlock">
+            <p>N = 15, M = 1. Uniform keveret, orákulum a jelölteken. A Geometria nézet a |α> és |β> tengelyeket mutatja (nem-vezető és vezető altér).</p>
+            <p>Összetettsége: O(√N) kvantumos lépésszámban, szemben a klasszikus O(N) kereséssel.</p>
+            <p>Az optimális iterációszám kb. 2,2</p>
+            <p>Grover-algoritmus 15 helyett körülbelül 2 lépésben találja meg a megoldást
+            — ez kb. 3,6-szoros gyorsulást jelent.</p>
+          </div>
+          <h4 style="margin-top:10px">Használati tippek</h4>
+            <div class="small" style="margin-top:6px;">
+              Koordináták: &lt;β&gt; = <span id="coordB">0</span>, &lt;α&gt; = <span id="coordA">0</span>
+            </div>
+          <ul class="small">
+            <li>Lépésenként nézd, hogyan fordul el a vektor a geometria nézeten.</li>
+            <li>Az amplitúdó-ploton figyeld a jelöltek amplitúdójának növekedését.</li>
+            <li>Állíts be többet (M) és figyeld az optimális iterációk számát (~π/4 √(N/M)).</li>
+          </ul>
+          <div class="card">
+            <h3 style="margin:0 0 8px 0">2) Geometriai interpretáció</h3>
+            <canvas id="geomCanvas" width="400" height="220"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  <div id="documentation" class="card">
+    <div class="doc-page active" id="page1">
+      <h2>1. oldal — Bevezetés és cél</h2>
+      <p>A Grover-szimulátor célja, hogy szemléletesen bemutassa a kvantumos Grover-algoritmus működését, amely klasszikus keresési problémákban kvadratikus gyorsítást biztosít. Az alkalmazás interaktív módon mutatja be az amplitúdók változását és a vektor forgását a Hilbert-térben.</p>
+      <p>A program főként oktatási célra készült, és segíti a kvantuminformatikai alapfogalmak (állapotvektor, orákulum, diffúzió, amplitúdó) megértését.</p>
+      <p>Az alkalmazás működéséhez nincs szükség telepítésre: bármely böngészőben futtatható.</p>
+    </div>
+    <div class="doc-page" id="page2">
+      <h2>2. oldal — Használati útmutató</h2>
+      <ul>
+        <li><b>N</b>: Az adatbázis mérete (2ⁿ). Minél nagyobb, annál több elem szerepel a keresésben.</li>
+        <li><b>M</b>: A jelölt (megoldásként megjelölt) elemek száma.</li>
+        <li><b>Inicializál</b>: Létrehozza az egyenletesen szuperponált kezdőállapotot.</li>
+        <li><b>Egy lépés</b>: Egyetlen Grover-iterációt hajt végre (orákulum + diffúzió).</li>
+        <li><b>Alkalmaz k iterációt</b>: Egyszerre több lépést hajt végre a megadott k érték szerint.</li>
+        <li><b>Auto</b> gombok: Automatikus ismétlést indítanak, így folyamatosan látható a vektor forgása.</li>
+        <li><b>Véletlen orákulum</b>: Új, véletlenszerűen kiválasztott megoldási halmazt generál.</li>
+        <li><b>Reset</b>: Visszaállítja az eredeti állapotot.</li>
+      </ul>
+      <p>A bal oldali diagram az amplitúdók abszolút értékét mutatja. A jobb oldali geometriai ábra a |α⟩ (nem-megoldás) és |β⟩ (megoldás) komponensek mentén ábrázolja az állapotvektort.</p>
+    </div>
+    <div class="doc-page" id="page3">
+      <h2>3. oldal — Algoritmus leírás</h2>
+      <p>A Grover-algoritmus egy kvantumos keresőeljárás, amely <b>O(√N)</b> lépés alatt képes megtalálni egy vagy több megoldást egy N elemű, ismeretlen adatbázisban. Ez kvadratikus gyorsulást jelent a klasszikus <b>O(N)</b> kereséshez képest.</p>
+      <h3>Algoritmus fő lépései:</h3>
+      <ol>
+        <li><b>Inicializálás:</b> A rendszer egyenletes szuperpozícióba kerül az összes lehetséges állapot felett a H kap segítségével:
+          <pre>|ψ₀⟩ = (1/√N) Σ |x⟩</pre>
+        </li>
+        <li><b>Orákulum (fekete doboz):</b> Az orákulum egy kvantumos függvény, amely megjelöli a megoldást az amplitúdó előjelének megfordításával:
+          <pre>|x⟩ → (-1)^{f(x)} |x⟩</pre>
+          ahol f(x)=1, ha x megoldás, különben 0.
+        </li>
+        <li><b>Diffúziós (invertálás az átlag körül) lépés:</b> A diffúziós operátor az amplitúdókat az átlag körül tükrözi, ezzel megnövelve a megoldás(ok) valószínűségét:
+          <pre>D = 2|s⟩⟨s| - I</pre>
+          ahol |s⟩ az egyenletes szuperpozíció.
+        </li>
+        <li><b>Iteráció:</b> Az orákulum és diffúziós operátor ismételt alkalmazása forgatja az állapotvektort a |α⟩–|β⟩ síkban, ahol |β⟩ a megoldások tere.
+        Az optimális iterációk száma:
+          <pre>k ≈ π/4 · √(N / M)</pre>
+        </li>
+        <li><b>Mérés:</b> A megfelelő számú iteráció után az állapotvektor a megoldások felé fordul, így a mérés nagy valószínűséggel a helyes elemet adja vissza.</li>
+      </ol>
+      <h3>Geometriai értelmezés:</h3>
+      <p>A szimulátor jobb oldalán látható vektor a |α⟩ (nem-megoldások) és |β⟩ (megoldások) komponensek mentén forog.
+      Minden Grover-iteráció egy adott szöggel elforgatja a vektort, közelítve a megoldás irányába.</p>
+    </div>
+    <div class="doc-page" id="page4">
+      <h2>4. oldal — Az algoritmus felhasználásai, hasznai</h2>
+      <p>A Grover-algoritmus a kvantumszámítás egyik legismertebb és legáltalánosabb keresőeljárása, amely a klasszikus módszerekhez képest <b>kvadratikus gyorsítást</b> biztosít. Ez azt jelenti, hogy míg egy hagyományos számítógép O(N) idő alatt képes megtalálni a megoldást egy N elemű halmazban, addig a Grover-algoritmus ugyanezt <b>O(√N)</b> kvantumos lépés alatt eléri.</p>
+      <h3>Felhasználási területek</h3>
+      <ul>
+        <li><b>Nem strukturált keresés:</b> Ismeretlen adatbázisban vagy fekete dobozban tárolt adatok gyors megtalálása.</li>
+        <li><b>Kombinatorikus problémák:</b> Megoldások kiválasztása nagy keresési térből (pl. gráfoptimalizálás, útvonaltervezés, Sudoku, SAT-problémák).</li>
+        <li><b>Kriptográfia:</b> Hash-függvények visszafejtése vagy jelszavak keresése, ahol az algoritmus <b>kvadratikus gyorsulást</b> ad (pl. egy N kulcsos brute-force támadás O(√N) idejűvé válik).</li>
+        <li><b>Adatbázis-keresés kvantum memóriában:</b> Olyan adatstruktúrák esetén, ahol a keresés nincs előrendezve (ellentétben a bináris kereséssel vagy indexelt struktúrákkal).</li>
+      </ul>
+      <h3>Hasznai és jelentősége</h3>
+      <p>A Grover-algoritmus nem csupán konkrét problémák megoldásában hasznos, hanem <b>elméleti szempontból is meghatározó</b> a kvantuminformatikában.
+      Megmutatja, hogy bizonyos klasszikus feladatok esetében a kvantummechanika <b>szisztematikus gyorsulást</b> képes nyújtani, még akkor is, ha nem exponenciálisat.</p>
+      <p>Az algoritmus továbbá alapul szolgál számos más kvantumos eljáráshoz, például a kvantumos gépi tanulási, optimalizálási és szimulációs algoritmusokhoz, amelyek a Grover-iteráció általánosított változatait alkalmazzák.</p>
+      <h3>Összegzés</h3>
+      <p>A Grover-algoritmus <b>O(√N)</b> bonyolultságú kvantumos keresőmódszer, amely kvadratikus gyorsulást jelent a klasszikus <b>O(N)</b> algoritmusokhoz képest.
+      Ez a különbség ugyan nem exponenciális, de gyakorlati szempontból hatalmas előnyt biztosít nagy keresési terek esetén, és a kvantuminformatika egyik alappillére.</p>
+    </div>
+    <div class="doc-page" id="page5">
+      <h2>5. oldal — Osztályok leírása és script leírás</h2>
+      <p>A következő rész bemutatja a Grover-szimulátor JavaScript-kódját és annak logikáját a legújabb verzió szerint.</p>
+      <h3>1) Grover osztály</h3>
+      <p>A Grover osztály a szimulátor központi logikai része. Feladata az állapot, a jelöltek, az amplitúdók és az iterációk kezelése.</p>
+      <ul>
+        <li><b>N</b>: az állapottér mérete</li>
+        <li><b>marked[ ]</b>: logikai tömb, amely jelzi a megoldás indexeit</li>
+        <li><b>state[ ]</b>: amplitúdóvektor</li>
+        <li><b>iter</b>: hány Grover-iteráció történt</li>
+      </ul>
+      <h4>Fő metódusok</h4>
+      <ul>
+        <li><b>constructor(N, markedIndices)</b> – Létrehozza az alapállapotot és meghívja az initUniform()-ot.</li>
+        <li><b>setProblem(N, markedIndices)</b> – Új problémát állít be és újrainicializál.</li>
+        <li><b>initUniform()</b> – Egyenletes szuperpozíció: <pre>|ψ₀⟩ = 1/√N · (1,1,…,1)</pre></li>
+        <li><b>applyOracle()</b> – A jelölt indexek amplitúdójának előjelét megfordítja.</li>
+        <li><b>applyDiffusion()</b> – Tükrözés az amplitúdók átlagára.</li>
+        <li><b>normalize()</b> – Az állapot újranormalizálása.</li>
+        <li><b>stepEducational()</b> – Egy szemléltető Grover-iteráció (orákulum + diffúzió).</li>
+        <li><b>stepPrecise(dt)</b> – Egy precíz, folyamatos léptetés α–β síkban, `dt` szorzóval.</li>
+        <li><b>step(dt)</b> – Automatikusan a pontos vagy szemléltető módot használja a `preciseMode` alapján.</li>
+        <li><b>projectionAlphaBeta()</b> – Vetítés a |α⟩ (nem-jelölt) és |β⟩ (jelölt) altérre.</li>
+      </ul>
+      <hr>
+      <h3>2) Amplitúdódiagram (Chart.js)</h3>
+      <ul>
+        <li><b>createChart(canvas, labels, data)</b> – új oszlopdiagram létrehozása az amplitúdókból</li>
+        <li><b>updateChart()</b> – frissíti az oszlopdiagramot minden lépés után</li>
+      </ul>
+      <hr>
+      <h3>3) Geometriai modell (Canvas API)</h3>
+      <ul>
+        <li><b>drawGeometry()</b> – Kirajzolja a Grover-állapot vektort α–β koordinátákban, megjeleníti az egységkört, a tengelyeket és a vektort.</li>
+      </ul>
+      <hr>
+      <h3>4) UI logika és eseménykezelők</h3>
+      <p>Gombok és funkcióik:</p>
+      <ul>
+        <li><b>btnInit</b> – Inicializálás</li>
+        <li><b>btnRandom</b> – Véletlen orákulum</li>
+        <li><b>btnStep</b> – Egy lépés</li>
+        <li><b>btnIter</b> – Több iteráció k-val</li>
+        <li><b>btnAuto / btnAuto2</b> – Automatikus léptetés (precíz vagy szemléltető mód szerint)</li>
+        <li><b>btnReset</b> – Állapot visszaállítása</li>
+        <li><b>modeBtn</b> – Mód váltás: "Pontos számítás" / "Szemléltetés"</li>
+      </ul>
+      <p>Minden gomb frissíti:</p>
+      <ul>
+        <li>a Grover állapotát</li>
+        <li>az amplitúdódiagramot</li>
+        <li>a geometriai nézetet</li>
+        <li>az információs panelt</li>
+      </ul>
+      <hr>
+      <h3>5) Dokumentáció kezelése</h3>
+      <p>A dokumentáció több oldalas, a <b>showPage(n)</b> függvény vezérli, melyik oldal látszik. A dokumentáció megnyitásakor az automatikus animációk leállnak.</p>
+      <hr>
+      <h3>6) Állapottábla frissítése</h3>
+      <p><b>updateInfoBlock()</b> – Frissíti a N, M, iterációk, optimális lépésszám és gyorsulás kijelzését.</p>
+    </div>
+    <div class="doc-page" id="page6">
+      <h2>6. oldal — Technikai háttér és használt könyvtárak</h2>
+      <p>A Grover-szimulátor JavaScript nyelven íródott, és kizárólag kliensoldali technológiákat használ.</p>
+      <ul>
+        <li><b>HTML5</b> – az alkalmazás szerkezeti leírása.</li>
+        <li><b>CSS3</b> – megjelenés, elrendezés, reszponzív dizájn.</li>
+        <li><b>JavaScript (ECMAScript 6)</b> – a logikai működés megvalósítása (osztályok, eseménykezelés, animáció).</li>
+        <li><b>Chart.js 4.3.0</b> – az amplitúdókat megjelenítő oszlopdiagramhoz.</li>
+        <li><b>Canvas API</b> – a geometriai nézet kirajzolásához.</li>
+      </ul>
+      <p>A Grover osztály kezeli az algoritmus lépéseit (orákulum, diffúzió, normalizálás). Az adatok vizuális megjelenítését a Chart.js és a Canvas 2D API biztosítja.</p>
+      <p>A program nem igényel hálózati kapcsolatot vagy külső futtatókörnyezetet, csupán egy böngészőt.</p>
+    </div>
+    <div class="doc-page" id="page7">
+      <h2>7. oldal — Források és használt segédeszközök</h2>
+      <p>A projekt során igyekeztem minél színesebb és ellenőrzöttebb forrásokat használni.</p>
+      <ul>
+        <li><b>Előadás jegyzet</b> – az algoritmus megértése, leírása.</li>
+        <li><b>Microsoft Ignite</b> – az algoritmus megértése, leírása.</li>
+        <li><b>MDN Web</b> – A fájl formázása és háttér fejlesztése.</li>
+        <li><b>ChatGPT</b> – A hosszú források egyszerűbb összefoglalása, meg nem értett fogalmak, mondatok elmagyarázása.</li>
+        <li><b>EITCA Academy</b> – az algoritmus megértése, leírása.</li>
+      </ul>
+      <p>.</p>
+    </div>
+    <div class="doc-nav">
+      <button id="prevPage">Előző</button>
+      <button id="nextPage">Következő</button>
+      <button id="backToSim">Vissza a szimulátorhoz</button>
+    </div>
+  </div>
+  <script>
+    let currentPage = 1;
+    const totalPages = 7;
+    let docsVisible = false;
+    function showPage(n) {
+      for (let i = 1; i <= totalPages; i++) {
+        const page = document.getElementById('page' + i);
+        if (page) page.classList.remove('active');
+      }
+      const current = document.getElementById('page' + n);
+      if (current) current.classList.add('active');
+      document.getElementById('prevPage').style.visibility = (n === 1) ? 'hidden' : 'visible';
+      document.getElementById('nextPage').style.visibility = (n === totalPages) ? 'hidden' : 'visible';
+    }
+    document.getElementById('nextPage').addEventListener('click', ()=> {
+      if (currentPage < totalPages) currentPage++;
+      showPage(currentPage);
+    });
+    document.getElementById('prevPage').addEventListener('click', ()=> {
+      if (currentPage > 1) currentPage--;
+      showPage(currentPage);
+    });
+    document.getElementById('backToSim').addEventListener('click', ()=> {
+      document.getElementById('documentation').style.display = 'none';
+      document.getElementById('simulator').style.display = 'block';
+      document.title = "Grover-szimulátor — vizuális demó";
+      document.getElementById('pageTitle').textContent = "Grover-szimulátor — vizuális demó";
+      document.getElementById('dok').textContent = "Dokumentáció";
+      docsVisible = false;
+    });
+    document.getElementById('dok').addEventListener('click', () => {
+      docsVisible = !docsVisible;
+      if (docsVisible) {
+        document.getElementById('simulator').style.display = 'none';
+        document.getElementById('documentation').style.display = 'block';
+        document.title = "Grover-szimulátor — dokumentáció";
+        document.getElementById('pageTitle').textContent = "Grover-szimulátor — dokumentáció";
+        document.getElementById('dok').textContent = "Vissza a szimulátorhoz";
+        showPage(currentPage);
+      } else {
+        document.getElementById('documentation').style.display = 'none';
+        document.getElementById('simulator').style.display = 'block';
+        document.title = "Grover-szimulátor — vizuális demó";
+        document.getElementById('pageTitle').textContent = "Grover-szimulátor — vizuális demó";
+        document.getElementById('dok').textContent = "Dokumentáció";
+      }
+    });
+  </script>
+  <script>
+    document.getElementById('dok').addEventListener('click', ()=> clearAllIntervals());
+    class Grover {
+      constructor(N=15, markedIndices=[0]) {
+        this.setProblem(N, markedIndices);
+      }
+      setProblem(N, markedIndices) {
+        this.N = N;
+        this.marked = new Array(N).fill(false);
+        (markedIndices||[]).forEach(i => { if (i>=0 && i<N) this.marked[i]=true; });
+        this.initUniform();
+      }
+      initUniform() {
+        const N = this.N;
+        const amp = 1/Math.sqrt(N);
+        this.state = new Array(N).fill(amp);
+        this.iter = 0.00;
+      }
+      normalize() {
+        let s=0; for (let i=0;i<this.N;i++) s+=this.state[i]*this.state[i];
+        let norm=Math.sqrt(s);
+        for (let i=0;i<this.N;i++) this.state[i]/=norm;
+      }
+      applyOracle() {
+        for (let i=0;i<this.N;i++) if (this.marked[i]) this.state[i] *= -1;
+      }
+      applyDiffusion() {
+        const N = this.N;
+        let avg = 0;
+        for (let i=0;i<N;i++) avg += this.state[i];
+        avg /= N;
+        for (let i=0;i<N;i++) this.state[i] = 2*avg - this.state[i];
+      }
+      step(f = 1) {
+        const { alpha, beta, M, N } = this.projectionAlphaBeta();
+        if (M === 0) return;
+        const theta = 2 * Math.asin(Math.sqrt(M / N));
+        const currentAngle = Math.atan2(beta, alpha);
+        const newAngle = currentAngle + f * theta;
+        const len = Math.sqrt(alpha*alpha + beta*beta);
+        const newAlpha = len * Math.cos(newAngle);
+        const newBeta  = len * Math.sin(newAngle);
+        const unmarkedCount = N - M;
+        for (let i = 0; i < N; i++) {
+          if (this.marked[i]) this.state[i] = newBeta / Math.sqrt(M);
+          else this.state[i] = newAlpha / Math.sqrt(unmarkedCount);
+        }
+        this.iter += f;
+        this.normalize();
+      }
+      projectionAlphaBeta() {
+        let N=this.N, M=0;
+        for (let i=0;i<N;i++) if (this.marked[i]) M++;
+        if (M===0) return {alpha:0,beta:0,M:0};
+        let aSum=0, bSum=0;
+        for (let i=0;i<N;i++) {
+          if (this.marked[i]) bSum += this.state[i];
+          else aSum += this.state[i];
+        }
+        const alpha = (N-M>0) ? aSum/Math.sqrt(N-M) : 0;
+        const beta  = (M>0) ? bSum/Math.sqrt(M) : 0;
+        return {alpha:alpha, beta:beta, M:M, N:N};
+      }
+    }
+    let grover = new Grover(15, [0]);
+    let ampChart = null;
+    let preciseMode = false;
+    function createChart(canvas, labels, data) {
+      const ctx = canvas.getContext('2d');
+      if (ampChart) ampChart.destroy();
+      ampChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'amplitúdó',
+            data: data,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          animation: { duration: 200 },
+          scales: {
+            y: { beginAtZero: true, title: { display:true, text:'amplitúdó' } },
+            x: { title: { display:true, text:'adatbázis index'} }
+          },
+          plugins: { legend: { display:false } }
+        }
+      });
+    }
+    function clearAllIntervals() {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer=null; }
+      if (autoTimer2) { clearInterval(autoTimer2); autoTimer2=null; }
+    }
+    function updateChart() {
+      const labels = grover.state.map((_,i) => i.toString());
+      const data = grover.state.map(x => Math.abs(x));
+      createChart(document.getElementById('ampChart'), labels, data);
+    }
+    function drawGeometry() {
+      const canvas = document.getElementById('geomCanvas');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const w = canvas.width, h = canvas.height;
+      const cx = 200, cy = h/2;
+      ctx.strokeStyle = '#bfc9d6';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx,20); ctx.lineTo(cx,h-20);
+      ctx.moveTo(20,cy); ctx.lineTo(w-20,cy);
+      ctx.stroke();
+      ctx.fillStyle = '#334';
+      ctx.font='14px Arial';
+      ctx.fillText('|α⟩ (non-solution)', cx+8, cy-40);
+      ctx.fillText('|β⟩ (solution)', w-140, cy+20);
+      const p = grover.projectionAlphaBeta();
+      const a = p.alpha; const b = p.beta;
+      document.getElementById('coordA').textContent = a.toFixed(4);
+      document.getElementById('coordB').textContent = b.toFixed(4);
+      const maxCoord = Math.max(1, Math.abs(a), Math.abs(b));
+      const scale = Math.min((h-80)/2, (w-200)/2) / maxCoord;
+      const vx = cx + b*scale;
+      const vy = cy - a*scale;
+      ctx.strokeStyle = '#555';
+      ctx.beginPath(); ctx.arc(cx,cy, Math.min(160,scale*1.0), 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(cx,cy);
+      ctx.lineTo(vx,vy);
+      ctx.strokeStyle = '#0b63d8';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      const ang = Math.atan2(vy-cy, vx-cx);
+      ctx.fillStyle = '#0b63d8';
+      ctx.beginPath();
+      ctx.moveTo(vx, vy);
+      ctx.lineTo(vx - 10*Math.cos(ang-0.35), vy - 10*Math.sin(ang-0.35));
+      ctx.lineTo(vx - 10*Math.cos(ang+0.35), vy - 10*Math.sin(ang+0.35));
+      ctx.closePath(); ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#999';
+      ctx.setLineDash([4,4]);
+      ctx.beginPath();
+      ctx.moveTo(vx,vy); ctx.lineTo(vx,cy); ctx.lineTo(cx,cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#334';
+      ctx.font='12px Arial';
+      ctx.fillText('(' + b.toFixed(3) + ', ' + a.toFixed(3) + ')', vx+10, vy-10);
+      ctx.fillStyle = '#222';
+      ctx.fillText('unit |α⟩', cx+6, cy - 90);
+      ctx.fillText('unit |β⟩', cx + 160, cy + 14);
+    }
+    function updateInfoBlock() {
+      const n = grover.N;
+      const m = grover.marked.reduce((s, v) => s + (v ? 1 : 0), 0);
+      const iter = grover.iter;
+      if (m <= 0 || n <= 0) {
+        document.getElementById('infoBlock').innerHTML = `
+          <p>N = ${n}, M = ${m}. Iterációk: ${iter}.</p>
+          <p>Nincs érvényes megoldás a rendszerben.</p>
+        `;
+        return;
+      }
+      const kOpt = (Math.PI / 4) * Math.sqrt(n / m);
+      const classical = n;
+      const quantum = kOpt;
+      const speedup = classical / quantum;
+      const kOptTxt = kOpt.toFixed(2);
+      const speedTxt = speedup.toFixed(1);
+      document.getElementById('infoBlock').innerHTML = `
+        <p>N = ${n}, M = ${m}. Iterációk: ${iter}.</p>
+        <p>Összetettsége: <b>O(√N)</b> kvantumos lépésszámban, szemben a klasszikus <b>O(N)</b> kereséssel.</p>
+        <p>Az optimális iterációszám kb. <b>${kOptTxt}</b>.</p>
+        <p>A Grover-algoritmus ${n} helyett körülbelül ${kOptTxt} lépésben találja meg a megoldást
+        — ez kb. <b>${speedTxt}*</b> gyorsulást jelent.</p>
+      `;
+      document.getElementById('status').textContent = 'készen áll';
+    }
+    function refreshAll() {
+      updateChart();
+      drawGeometry();
+      updateInfoBlock();
+    }
+    Grover.prototype.stepEducational = function() {
+      this.applyOracle();
+      this.applyDiffusion();
+      this.iter += 1;
+      this.normalize();
+    };
+    Grover.prototype.stepPrecise = function(dt = 1) {
+      let N = this.N, M = this.marked.reduce((s,v)=>s+(v?1:0),0);
+      if (M === 0) return;
+      const theta = 2 * Math.asin(Math.sqrt(M/N));
+      const p = this.projectionAlphaBeta();
+      const a = p.alpha, b = p.beta;
+      const newAlpha = a * Math.cos(theta*dt) - b * Math.sin(theta*dt);
+      const newBeta  = a * Math.sin(theta*dt) + b * Math.cos(theta*dt);
+      for (let i=0;i<N;i++) {
+        if (this.marked[i]) this.state[i] = newBeta / Math.sqrt(M);
+        else this.state[i] = newAlpha / Math.sqrt(N - M);
+      }
+      this.normalize();
+      this.iter += dt;
+    };
+    Grover.prototype.step = function(dt = 1) {
+      if (preciseMode) this.stepPrecise(dt);
+      else this.stepEducational();
+    };
+    document.getElementById('btnInit').addEventListener('click', ()=>{
+      const N = parseInt(document.getElementById('inputN').value)||15;
+      const M = parseInt(document.getElementById('inputM').value)||1;
+      if (N < 2) { alert('N legalább 2 legyen'); return; }
+      const marked = [];
+      for (let i=0;i<M && i<N;i++) marked.push(i);
+      grover = new Grover(N, marked);
+      refreshAll();
+    });
+    document.getElementById('modeBtn').addEventListener('click', ()=>{
+      preciseMode = !preciseMode;
+      document.getElementById('modeBtn').textContent = preciseMode ? "Szemléltetés" : "Pontos számítás";
+      document.getElementById('status').textContent = preciseMode ? "pontos számítás mód" : "szemléltetés mód";
+    });
+    document.getElementById('btnRandom').addEventListener('click', ()=>{
+      const N = parseInt(document.getElementById('inputN').value)||15;
+      const M = Math.max(1, Math.min(N, parseInt(document.getElementById('inputM').value)||1));
+      const indices = [];
+      const perm = Array.from({length:N},(_,i)=>i);
+      for (let i=N-1;i>0;i--) {
+        const j = Math.floor(Math.random()*(i+1));
+        [perm[i],perm[j]]=[perm[j],perm[i]];
+      }
+      for (let i=0;i<M;i++) indices.push(perm[i]);
+      grover = new Grover(N, indices);
+      refreshAll();
+    });
+    document.getElementById('btnReset').addEventListener('click', ()=>{
+      grover.initUniform();
+      refreshAll();
+    });
+    document.getElementById('btnStep').addEventListener('click', ()=>{
+      grover.step();
+      refreshAll();
+    });
+    document.getElementById('btnIter').addEventListener('click', ()=>{
+      const k = Math.max(0.01, parseFloat(document.getElementById('inputK').value)||1);
+      if (preciseMode) grover.step(k);
+      else for (let i=0;i<Math.floor(k);i++) grover.step();
+      refreshAll();
+    });
+    let autoTimer = null;
+    document.getElementById('btnAuto').addEventListener('click', ()=>{
+      if (!autoTimer) {
+        autoTimer = setInterval(()=>{ grover.step(); refreshAll(); }, 600);
+        document.getElementById('btnAuto').textContent = 'Auto: Stop';
+      } else {
+        clearInterval(autoTimer); autoTimer = null;
+        document.getElementById('btnAuto').textContent = 'Auto: Start';
+      }
+    });
+    let autoTimer2 = null;
+    document.getElementById('btnAuto2').addEventListener('click', ()=>{
+      if (!autoTimer2) {
+        const k = Math.max(0.01, parseFloat(document.getElementById('inputK').value)||1);
+        autoTimer2 = setInterval(()=>{
+          if (preciseMode) grover.step(k);
+          else for (let i=0;i<k;i++) grover.step();
+          refreshAll();
+        }, 600);
+        document.getElementById('btnAuto2').textContent = 'Auto k: Stop';
+      } else {
+        clearInterval(autoTimer2);
+        autoTimer2 = null;
+        document.getElementById('btnAuto2').textContent = 'Auto k: Start';
+      }
+    });
+    window.addEventListener('load', ()=>{
+      grover = new Grover(15, [0]);
+      refreshAll();
+    });
+  </script>
+  </body>
+</html>
