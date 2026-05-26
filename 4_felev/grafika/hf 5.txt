@@ -1,0 +1,380 @@
+#include "framework.h"
+#include <iostream>
+
+const char* vertSource = R"(
+    #version 330 core
+    uniform mat4 M;
+    uniform mat4 MVP;
+
+    layout(location = 0) in vec3 vtxPos;
+    layout(location = 1) in vec3 vtxNorm;
+
+    out vec3 worldPos;
+    out vec3 normal;
+
+    void main() {
+        gl_Position = MVP * vec4(vtxPos, 1.0f);
+        worldPos = vec3(M * vec4(vtxPos, 1.0f));
+        normal = normalize(mat3(M) * vtxNorm);
+    }
+)";
+const char* fragSource = R"(
+    #version 330
+
+    in vec3 normal;
+    in vec3 worldPos;
+    uniform vec3 ambientLight;
+    uniform vec3 lightColor;
+    uniform vec3 lightDir;
+    uniform vec3 eyePos;
+    uniform vec3 diffuse;
+    uniform vec3 specular;
+    uniform float shininess;
+    uniform bool isPane;
+
+    uniform int triangleCount;
+    uniform vec3 triV0[1000];
+    uniform vec3 triV1[1000];
+    uniform vec3 triV2[1000];
+
+    out vec4 fragmentColor;
+
+    bool metszet(vec3 orig, vec3 dir, vec3 a, vec3 b, vec3 c) {
+        vec3 edge1 = b - a;
+        vec3 edge2 = c - a;
+        vec3 h = cross(dir, edge2);
+        float det = dot(edge1, h);
+
+        if (abs(det) < 0.001f) return false;
+        float invDet = 1.0f / det;
+        vec3 s = orig - a;
+        float u = dot(s, h) * invDet;
+        if (u < 0.0f || u > 1.0f) return false;
+        vec3 q = cross(s, edge1);
+        float v = dot(dir, q) * invDet;
+        if (v < 0.0f || u + v > 1.0f) return false;
+        float t = dot(edge2, q) * invDet;
+        return (t > 0.001f);
+    }
+    bool isInShadow(vec3 pt, vec3 dir, vec3 n) {
+        vec3 offset = n * 0.001;
+        vec3 start = pt + offset;
+        for (int i = 0; i < triangleCount; ++i) {
+            if (metszet(start, dir, triV0[i], triV1[i], triV2[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+    void main() {
+        vec3 aColor = diffuse;
+        if (isPane && abs(normal.y) > 0.9f) {
+            float tmp = mod(floor(worldPos.x) + floor(worldPos.z), 2.0f);
+            aColor = tmp < 1.0f ? vec3(1.0f, 1.0f, 1.0f) : vec3(0.0f, 0.1f, 0.3f);
+        }
+
+        vec3 n = normalize(normal);
+        vec3 v = normalize(eyePos - worldPos);
+        vec3 l = normalize(lightDir);
+        vec3 h = normalize(v + l);
+
+        float cosTheta = max(dot(n, l), 0.0f);
+        float cosPhi = max(dot(n, h), 0.0f);
+
+        vec3 ambientTerm = ambientLight * aColor * 3.0;
+        vec3 diffuseTerm = lightColor * aColor * cosTheta;
+        vec3 specularTerm = lightColor * specular * pow(cosPhi, shininess);
+
+        vec3 color = ambientTerm;
+        if (!isInShadow(worldPos, l, n)) {
+            color += diffuseTerm + specularTerm;
+        }
+        fragmentColor = vec4(color, 1.0f);
+        //fragmentColor = vec4(isInShadow(worldPos, l, n) ? vec3(1, 0, 0) : vec3(0, 1, 0), 1.0);
+    }
+)";
+const int winWidth = 600, winHeight = 600;
+const vec3 ambientLight(0.4f, 0.4f, 0.4f);
+const vec3 lightColor(2.0f, 2.0f, 2.0f);
+const vec3 lightDir = normalize(vec3(1, 1, 1));
+mat4 tmp = mat4(
+    vec4(1, 0, 0, 0),
+    vec4(0, 1, 0, 0),
+    vec4(0, 0, 1, 0),
+    vec4(0, 0, 0, 1));
+struct triangle {
+    vec3 A;
+    vec3 B;
+    vec3 C;
+};
+struct Vertex {
+    vec3 position;
+    vec3 normal;
+    vec2 texCoord;
+};
+class Camera {
+    vec3 wEye;
+    vec3 wLookat;
+    vec3 wVup;
+    float fov;
+    float asp;
+    float fp;
+    float bp;
+public:
+    Camera() {
+        asp = 1.0f;
+        fov = 45.0f * (float)M_PI / 180.0f;
+        fp = 0.1f; bp = 100.0f;
+        wEye = vec3(0.0f, 1.0f, 4.0f);
+        wLookat = vec3(0.0f, 0.0f, 0.0f);
+        wVup = vec3(0.0f, 1.0f, 0.0f);
+    }
+    mat4 V() { return lookAt(wEye, wLookat, wVup); }
+    mat4 P() { return perspective(fov, asp, fp, bp); }
+    void Rotate(float anglightColor) {
+        float r = length(vec2(wEye.x, wEye.z));
+        float phi = atan2(wEye.z, wEye.x) + anglightColor;
+        wEye.x = r * cos(phi);
+        wEye.z = r * sin(phi);
+    }
+    void oribt(float anglightColor) {
+        mat4 rot = rotate(anglightColor, vec3(0.0f, 1.0f, 0.0f));
+        vec4 transformed = rot * vec4(wEye.x, wEye.y, wEye.z, 1.0f);
+        wEye = vec3(transformed.x, transformed.y, transformed.z);
+    }
+    vec3 getEye() const { return wEye; }
+};
+class Material {
+public:
+    vec3 diffuse, specular;
+    float shininess;
+    Material(vec3 d = vec3(0.0f, 0.0f, 0.0f), vec3 s = vec3(0.0f, 0.0f, 0.0f), float sh = 0)
+        : diffuse(d), specular(s), shininess(sh) {
+    }
+};
+class Object3D {
+protected:
+    unsigned int vao = 0, vbo = 0;
+    std::vector<Vertex> vertices;
+    Material* material;
+    mat4 modelMatrix;
+    bool isPane;
+public:
+    Object3D(Material* mate, bool checkerboard = false)
+        : material(mate), modelMatrix(tmp), isPane(checkerboard) {
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+    }
+    virtual void tessellate() = 0;
+    void uploadToGPU() {
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
+        glBindVertexArray(0);
+    }
+    void render(GPUProgram* program, Camera* camera) {
+        program->Use();
+        mat4 MVP = camera->P() * camera->V() * modelMatrix;
+        program->setUniform(modelMatrix, "M");
+        program->setUniform(MVP, "MVP");
+        program->setUniform(lightDir, "lightDir");
+        program->setUniform(ambientLight, "ambientLight");
+        program->setUniform(lightColor, "lightColor");
+        program->setUniform(material->diffuse, "diffuse");
+        program->setUniform(material->specular, "specular");
+        program->setUniform(material->shininess, "shininess");
+        program->setUniform(isPane, "isPane");
+        program->setUniform(camera->getEye(), "eyePos");
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices.size());
+        glBindVertexArray(0);
+    }
+    const std::vector<Vertex>& getVertices() const { return vertices; }
+    std::vector<triangle> getTriangles() const {
+        std::vector<triangle> tris;
+        for (size_t i = 0; i + 2 < vertices.size(); i += 3) {
+            tris.push_back({ vertices[i].position, vertices[i + 1].position, vertices[i + 2].position });
+        }
+        return tris;
+    }
+};
+class Square : public Object3D{
+    vec3 poz;
+public:
+    Square(vec3 o, Material* m) : Object3D(m, true) , poz(o){}
+    void tessellate() override {
+        vec3 egy = vec3(0, 1, 0);
+        vertices = {
+            Vertex({poz, egy, vec2(0,0)}),
+            Vertex({poz + vec3(1, 0, 0), egy, vec2(0,1)}),
+            Vertex({poz + vec3(0, 0, 1), egy, vec2(1, 0)}),
+            Vertex({poz + vec3(1, 0, 0), egy, vec2(1, 0)}),
+            Vertex({poz + vec3(1, 0, 1), egy, vec2(1, 1)}),
+            Vertex({poz + vec3(0, 0, 1), egy, vec2(0, 1)})
+        };
+        uploadToGPU();
+    }
+};
+class Cylinder : public Object3D {
+    vec3 base, normalv;
+    float radius, height;
+public:
+    Cylinder(vec3 b, vec3 a, float r, float h, Material* m)
+        : Object3D(m), base(b), normalv(normalize(a)), radius(r), height(h) {
+    }
+    void tessellate() override {
+        vertices.clear();
+        int segments = 12;
+        vec3 perp = abs(normalv.y) > 0.9f ? vec3(1.0f, 0.0f, 0.0f) : vec3(0.0f, 1.0f, 0.0f);
+        vec3 u = normalize(cross(normalv, perp));
+        vec3 v = normalize(cross(normalv, u));
+        vec3 teto = base + normalv * height;
+        for (int i = 0; i < segments; i++) {
+            float angle1 = 2 * (float) M_PI * i / segments;
+            float angle2 = 2 * (float) M_PI * (i + 1) / segments;
+            vec3 p1 = teto + radius * (cos(angle1) * u + sin(angle1) * v);
+            vec3 p2 = teto + radius * (cos(angle2) * u + sin(angle2) * v);
+            vec3 p3 = base + radius * (cos(angle1) * u + sin(angle1) * v);
+            vec3 p4 = base + radius * (cos(angle2) * u + sin(angle2) * v);
+            vec3 p5 = p3 + normalv * height;
+            vec3 p6 = p4 + normalv * height;
+            vec3 sideNormal1 = normalize((p3 - base) - normalv * dot(p3 - base, normalv));
+            vec3 sideNormal2 = normalize((p4 - base) - normalv * dot(p4 - base, normalv));
+            vertices.push_back({ base, -normalv, vec2(0.5f, 0.5f) });
+            vertices.push_back({ p3, -normalv, vec2(0.5f + 0.5f * cos(angle1), 0.5f + 0.5f * sin(angle1)) });
+            vertices.push_back({ p4, -normalv, vec2(0.5f + 0.5f * cos(angle2), 0.5f + 0.5f * sin(angle2)) });
+            vertices.push_back({ teto, normalv, vec2(0.5f, 0.5f) });
+            vertices.push_back({ p2, normalv, vec2(0.5f + 0.5f * cos(angle2), 0.5f + 0.5f * sin(angle2)) });
+            vertices.push_back({ p1, normalv, vec2(0.5f + 0.5f * cos(angle1), 0.5f + 0.5f * sin(angle1)) });
+            vertices.push_back({ p3, sideNormal1, vec2(i / (float)segments, 0) });
+            vertices.push_back({ p4, sideNormal2, vec2((i + 1) / (float)segments, 0) });
+            vertices.push_back({ p5, sideNormal1, vec2(i / (float)segments, 1) });
+            vertices.push_back({ p5, sideNormal1, vec2(i / (float)segments, 1) });
+            vertices.push_back({ p4, sideNormal2, vec2((i + 1) / (float)segments, 0) });
+            vertices.push_back({ p6, sideNormal2, vec2((i + 1) / (float)segments, 1) });
+        }
+        uploadToGPU();
+    }
+};
+class Cone : public Object3D {
+    vec3 csucs, normalv;
+    float angle, height;
+public:
+    Cone(vec3 a, vec3 d, float ang, float h, Material* m)
+        : Object3D(m), csucs(a), normalv(normalize(d)), angle(ang), height(h) {
+    }
+    void tessellate() override {
+        vertices.clear();
+        int segments = 6;
+        vec3 seg = abs(normalv.y) > 0.9f ? vec3(1.0f, 0.0f, 0.0f) : vec3(0.0f, 1.0f, 0.0f);
+        vec3 u = normalize(cross(normalv, seg));
+        vec3 v = normalize(cross(normalv, u));
+        vec3 alapkozep = csucs + normalv * height;
+        float radius = height * tan(angle);
+        for (int i = 0; i < segments; i++) {
+            float angle1 = 2 * (float) M_PI * i / segments;
+            float angle2 = 2 * (float) M_PI * (i + 1) / segments;
+            vec3 p1 = alapkozep + radius * (cos(angle1) * u + sin(angle1) * v);
+            vec3 p2 = alapkozep + radius * (cos(angle2) * u + sin(angle2) * v);
+            vec3 normal1 = normalize((p1 - csucs) - normalv * dot(p1 - csucs, normalv));
+            vec3 normal2 = normalize((p2 - csucs) - normalv * dot(p2 - csucs, normalv));
+            vec3 csucsNormal = normalize(normal1 + normal2);
+            vertices.push_back({ alapkozep, -normalv, vec2(0.5f, 0.5f) });
+            vertices.push_back({ p2, -normalv, vec2(0.5f + 0.5f * cos(angle2), 0.5f + 0.5f * sin(angle2)) });
+            vertices.push_back({ p1, -normalv, vec2(0.5f + 0.5f * cos(angle1), 0.5f + 0.5f * sin(angle1)) });
+            vertices.push_back({ csucs, csucsNormal, vec2(0.5f, 0.5f) });
+            vertices.push_back({ p1, normal1, vec2(i / (float)segments, 0) });
+            vertices.push_back({ p2, normal2, vec2((i + 1) / (float)segments, 0) });
+        }
+        uploadToGPU();
+    }
+};
+class Scene {
+    std::vector<Object3D*> objects;
+    std::vector<triangle> haromszog_ozon;
+    GPUProgram* program;
+public:
+    Scene(GPUProgram* prog) : program(prog) {build();}
+    void build() {
+        static Material gold(vec3(0.17f, 0.35f, 1.5f), vec3(3.1f, 2.7f, 1.9f), 50.0f);
+        static Material water(vec3(1.3f, 1.3f, 1.3f), vec3(0.0f, 0.0f, 0.0f), 100.0f);
+        static Material plastic(vec3(0.3f, 0.2f, 0.1f), vec3(2.0f, 2.0f, 2.0f), 50.0f);
+        static Material cyan(vec3(0.1f, 0.2f, 0.3f), vec3(2.0f, 2.0f, 2.0f), 100.0f);
+        static Material magenta(vec3(0.3f, 0.0f, 0.2f), vec3(2.0f, 2.0f, 2.0f), 20.0f);
+        for (int x = -10; x < 10; x++) {
+            for (int z = -10; z < 10; z++) {
+                bool isWhite = (x + z) % 2 == 0;
+                Material pane(isWhite ? vec3(1.0f, 1.0f, 1.0f) : vec3(0.0f, 0.1f, 0.3f), vec3(0), 20.0f);
+                Square* table = new Square(vec3((float)x, -1.0f, (float)z), &pane);
+                objects.push_back(table);
+            }
+        }
+        objects.push_back(new Cylinder(vec3(1.0f, -1.0f, 0.0f), vec3(0.1f, 1.0f, 0.0f), 0.3f, 2.0f, &gold));
+        objects.push_back(new Cylinder(vec3(0.0f, -1.0f, -0.8f), vec3(-0.2f, 1.0f, 0.1f), 0.3f, 2.0f, &water));
+        objects.push_back(new Cylinder(vec3(-1.0f, -1.0f, 0.0f), vec3(0.0f, 1.0f, 0.1f), 0.3f, 2.0f, &plastic));
+        objects.push_back(new Cone(vec3(0.0f, 1.0f, 0.0f), vec3(-0.1f, -1.0f, -0.05f), 0.2f, 2.0f, &cyan));
+        objects.push_back(new Cone(vec3(0.0f, 1.0f, 0.8f), vec3(0.2f, -1.0f, 0.0f), 0.2f, 2.0f, &magenta));
+        for (auto& obj : objects) {
+            obj->tessellate();
+            obj->uploadToGPU();
+        }
+        collectharomszog_ozon();
+    }
+    void collectharomszog_ozon() {
+        haromszog_ozon.clear();
+        for (auto obj : objects) {
+            auto haromszogek = obj->getTriangles();
+            haromszog_ozon.insert(haromszog_ozon.end(), haromszogek.begin(), haromszogek.end());
+        }
+        uploadTrianglesToShader();
+    }
+    void uploadTrianglesToShader() {
+        int triangleCount = (int)haromszog_ozon.size();
+        if (triangleCount > 1000) triangleCount = 1000;
+        program->setUniform(triangleCount, "triangleCount");
+        for (int i = 0; i < triangleCount; i++) {
+            std::string idx = std::to_string(i);
+            program->setUniform(haromszog_ozon[i].A, ("triV0[" + idx + "]").c_str());
+            program->setUniform(haromszog_ozon[i].B, ("triV1[" + idx + "]").c_str());
+            program->setUniform(haromszog_ozon[i].C, ("triV2[" + idx + "]").c_str());
+        }
+    }
+    void render(Camera* camera) {
+        for (auto obj : objects) {
+            obj->render(program, camera);
+        }
+    }
+};
+class MyApp : public glApp {
+    GPUProgram* gpuProgram;
+    Scene* scene;
+    Camera* camera;
+public:
+    MyApp() : glApp("HF_5") {}
+    void onInitialization() {
+        gpuProgram = new GPUProgram(vertSource, fragSource);
+        camera = new Camera();
+		scene = new Scene(gpuProgram);
+    }
+    void onDisplay() {
+        glClearColor(0.4f, 0.4f, 0.4f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        scene->render(camera);
+    }
+    void onKeyboard(int key) {
+        if (key == 'a') {
+            camera->Rotate((float)M_PI / (4.0f));
+        }
+		if (key == 'd') {
+            camera->oribt((float)M_PI / 4.0f);
+		}
+        refreshScreen();
+    }
+}; MyApp app;

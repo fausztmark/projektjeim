@@ -1,0 +1,136 @@
+#include "framework.h"
+#include <vector>
+#include <random>
+
+const char* vertSource = R"(
+    #version 330
+    precision highp float;
+
+    layout(location = 0) in vec2 cP;
+    uniform mat4 MVP;
+
+    void main() {
+        gl_Position = MVP * vec4(cP, 0.0, 1.0);
+    }
+)";
+const char* fragSource = R"(
+    #version 330
+    precision highp float;
+
+    uniform vec3 color;
+    out vec4 fragmentColor;
+
+    void main() {
+        fragmentColor = vec4(color, 1);
+    }
+)";
+const int winWidth = 600, winHeight = 600;
+float zoom = 1.0f;
+struct Branch {
+    vec2 start, end;
+    float voltage;
+    int depth;
+};
+class Camera {
+private:
+    vec3 eye = vec3(0.0f, 0.0f, 2.0f);
+    vec3 lookat = vec3(0.0f, 0.0f, 0.0f);
+    vec3 up = vec3(0.0f, 1.0f, 0.0f);
+    float fov = 45.0f * (float)M_PI / 180.0f;
+    float aspect = 1.0f;
+    float near = 0.1f;
+    float far = 100.0f;
+public:
+    void setZoom(float z) { eye.z = 2.0f / z; }
+    mat4 getMVPMatrix() { return P() * V(); }
+    mat4 V() { return lookAt(eye, lookat, up); }
+    mat4 P() { return perspective(fov, aspect, near, far); }
+};
+class Flash {
+private:
+    std::vector<Branch> branches;
+public:
+    std::mt19937 hash_rng(vec2 position) {
+        std::seed_seq seed = {
+            static_cast<unsigned>(position.x * 10000),
+            static_cast<unsigned>(position.y * 10000)
+        };
+        return std::mt19937(seed);
+    }
+    std::vector<Branch> getBranches() { return branches; }
+    void generateFractalTree(vec2 start, vec2 direction, int depth) {
+        if (depth > 8) return;
+
+        float length = 0.2f / pow(1.5f, depth);
+        vec2 end = start + normalize(direction) * length;
+
+        float voltage = (float)(depth) / 8.0f;
+        branches.push_back({ start, end, voltage, depth });
+
+        std::mt19937 localGen = hash_rng((start + end) * zoom);
+        std::uniform_real_distribution<float> angleDist(-0.5f, 0.5f);
+        int numBranches = 2 + (depth % 2);
+        for (int i = 0; i < numBranches; ++i) {
+            float angle = angleDist(localGen);
+            float ca = cos(angle), sa = sin(angle);
+            vec2 newDir = vec2(direction.x * ca - direction.y * sa, direction.x * sa + direction.y * ca);
+            generateFractalTree(end, newDir, depth + 1);
+        }
+    }
+    void drawBranch(const Branch& b, GPUProgram& prog) {
+        vec3 color;
+        if (b.voltage < 0.3f) color = vec3(0.0f, 0.5f, 1.0f);
+        else if (b.voltage < 0.7f) color = vec3(0.7f, 0.0f, 1.0f);
+        else color = vec3(1.0f, 1.0f, 1.0f);
+
+        Geometry<vec2> line;
+        line.Vtx().push_back(b.start);
+        line.Vtx().push_back(b.end);
+        line.updateGPU();
+        line.Draw(&prog, GL_LINES, color * (1.0f - b.depth * 0.1f));
+    }
+};
+class MyApp : public glApp {
+private:
+    Camera* camera;
+    GPUProgram* program;
+    Flash* flash;
+public:
+    MyApp() : glApp("Fraktál Villám Generátor") {}
+    void onInitialization() override {
+        program = new GPUProgram(vertSource, fragSource);
+        camera = new Camera();
+        flash = new Flash();
+    }
+    void onDisplay() override {
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        mat4 MVP = camera->getMVPMatrix() * scale(vec3(zoom, zoom, 1));
+        program->setUniform(MVP, "MVP");
+
+        for (const auto& b : flash->getBranches())
+            flash->drawBranch(b, *program);
+    }
+    void onKeyboard(int key) override {
+        if (key == '+') zoom *= 1.1f;
+        if (key == '-') zoom /= 1.1f;
+        camera->setZoom(zoom);
+        refreshScreen();
+    }
+    vec3 PixelToNDC(int pX, int pY) {
+        return vec3(2.0f * pX / winWidth - 1, 1.0f - 2.0f * pY / winHeight, 1);
+    }
+    void onMousePressed(MouseButton but, int pX, int pY) override {
+        vec3 selectedPoint = PixelToNDC(pX, pY);
+        if (but == MOUSE_LEFT) {
+            float x = selectedPoint.x / zoom;
+            float y = selectedPoint.y / zoom;
+            vec2 pos(x, y);
+            vec2 end = vec2(-x/2, -y/2);
+            vec2 dir(0.0f, 1.0f);
+            flash->generateFractalTree(pos, dir, 0);
+            refreshScreen();
+        }
+    }
+}; MyApp app;

@@ -1,0 +1,340 @@
+#include "framework.h"
+#include <iostream>
+
+const char* vertSource = R"(
+    #version 330
+    precision highp float;
+
+	layout(location = 0) in vec2 cP;	// 0. bemeneti regiszter
+	uniform mat4 MVP;
+
+	void main() {
+		gl_Position = MVP * vec4(cP.x, cP.y, 0, 1); 	// bemenet m r normaliz lt eszk zkoordin t kban
+	}
+)";
+const char* fragSource = R"(
+    #version 330
+    precision highp float;
+
+	uniform vec3 color;			// konstans sz n	
+	out vec4 fragmentColor;		// pixel sz n
+	void main() {
+		fragmentColor = vec4(color, 1); // RGB -> RGBA
+	}
+)";
+
+const int winWidth = 600, winHeight = 600;
+
+enum State { WAITING, MOVING, FALLEN };
+
+class Camera {
+	vec2 wCenter;
+	vec2 wSize;
+public:
+	Camera(vec2 c, vec2 s) { wCenter = c; wSize = s; }
+	mat4 V() { return translate(vec3(-wCenter.x, -wCenter.y, 0)); }
+	mat4 P() { return scale(vec3(2 / wSize.x, 2 / wSize.y, 1)); }
+	mat4 Vinv() { return translate(vec3(wCenter.x, wCenter.y, 0)); }
+	mat4 Pinv() { return scale(vec3(wSize.x / 2, wSize.y / 2, 1)); }
+	vec3 screenToWorld(const vec3& screenPos, float screenWidth, float screenHeight) {
+		float normalizedX = (screenPos.x / screenWidth) * 2.0f - 1.0f;
+		float normalizedY = 1.0f - (screenPos.y / screenHeight) * 2.0f;
+		vec4 worldPos = vec4(normalizedX, normalizedY, 0.0f, 1.0f);
+		worldPos = Pinv() * Vinv() * worldPos;
+		return vec3(worldPos.x, worldPos.y, worldPos.z);
+	}
+	void Zoom(float s) { wSize = wSize * s; }
+	void Pan(vec2 t) { wCenter = wCenter + t; }
+};
+class Spline {
+private:
+	Geometry<vec3>* curve;
+	Geometry<vec3>* controlPoints;
+	Geometry<float>* ts;
+	State state;
+public:
+	Spline() {
+		curve = new Geometry<vec3>();
+		controlPoints = new Geometry<vec3>();
+		ts = new Geometry<float>();
+	}
+	void addControlPoint(const vec3& p) {
+		controlPoints->Vtx().push_back(p);
+		if (ts->Vtx().empty())
+			ts->Vtx().push_back(0);
+		else
+			ts->Vtx().push_back(ts->Vtx().back() + 1);
+		updateCurve();
+		printf("x: %f; y: %f; z: %f\n", p.x, p.y, p.z);
+		controlPoints->updateGPU();
+	}
+	vec3 Hermite(vec3 p0, vec3 v0, float t0, vec3 p1, vec3 v1, float t1, float t) {
+		if (t0 == t1) return p0;
+		float s = (t - t0) / (t1 - t0);
+		float s2 = s * s;
+		float s3 = s2 * s;
+		float h00 = 2 * s3 - 3 * s2 + 1;
+		float h10 = s3 - 2 * s2 + s;
+		float h01 = -2 * s3 + 3 * s2;
+		float h11 = s3 - s2;
+		return h00 * p0 + h10 * v0 * (t1 - t0) + h01 * p1 + h11 * v1 * (t1 - t0);
+	}
+	Geometry<vec3>* getCurve() {
+		return curve;
+	}
+	float Curvature(float t) {
+		float dt = 0.0001f;
+		vec3 r1 = (evaluateSpline(t + dt) - evaluateSpline(t - dt)) / (2.0f * dt);
+		vec3 r2 = (evaluateSpline(t + dt) - 2.0f * evaluateSpline(t) + evaluateSpline(t - dt)) / (dt * dt);
+		float numerator = fabs(r1.x * r2.y - r1.y * r2.x);
+		float denominator = pow(r1.x * r1.x + r1.y * r1.y, 1.5f);
+		if (denominator < 0.0001f) return 0.0f;
+		return numerator / denominator;
+	}
+	vec3 Tangent(int i) {
+		int size = controlPoints->Vtx().size();
+		if (i < 0 || i >= size) return vec3(0, 0, 0);
+		if (i == 0) {
+			return (controlPoints->Vtx()[i + 1] - controlPoints->Vtx()[i]) / (ts->Vtx()[i + 1] - ts->Vtx()[i]);
+		}
+		if (i == size - 1) {
+			return (controlPoints->Vtx()[i] - controlPoints->Vtx()[i - 1]) / (ts->Vtx()[i] - ts->Vtx()[i - 1]);
+		}
+		return (controlPoints->Vtx()[i + 1] - controlPoints->Vtx()[i - 1]) / (ts->Vtx()[i + 1] - ts->Vtx()[i - 1]);
+	}
+	void updateCurve() {
+		curve->Vtx().clear();
+		int n = controlPoints->Vtx().size();
+		if (n < 2) return;
+		for (int i = 0; i < 100; i++) {
+			float t = ts->Vtx().front() + (ts->Vtx().back() - ts->Vtx().front()) * (i / 99.0f);
+			curve->Vtx().push_back(evaluateSpline(t));
+		}
+		curve->updateGPU();
+	}
+	vec3 evaluateSpline(float t) {
+		int n = controlPoints->Vtx().size();
+		if (n < 2) return vec3(0.0f);
+		if (t <= ts->Vtx().front()) return controlPoints->Vtx().front();
+		if (t >= ts->Vtx().back()) return controlPoints->Vtx().back();
+		for (int i = 0; i < n - 1; i++) {
+			if (ts->Vtx()[i] <= t && t <= ts->Vtx()[i + 1]) {
+				vec3 v0(0, 0, 0), v1(0, 0, 0);
+				if (i > 0) {
+					v0 = (controlPoints->Vtx()[i + 1] - controlPoints->Vtx()[i - 1]) / (ts->Vtx()[i + 1] - ts->Vtx()[i - 1]);
+				}
+				if (i < n - 2) {
+					v1 = (controlPoints->Vtx()[i + 2] - controlPoints->Vtx()[i]) / (ts->Vtx()[i + 2] - ts->Vtx()[i]);
+				}
+				return Hermite(controlPoints->Vtx()[i], v0, ts->Vtx()[i], controlPoints->Vtx()[i + 1], v1, ts->Vtx()[i + 1], t);
+			}
+		}
+		return controlPoints->Vtx().back();
+	}
+	Geometry<vec3>* getPoints() { return controlPoints; }
+	void draw(GPUProgram* gpuProgram) {
+		glLineWidth(3.0f);
+		curve->Draw(gpuProgram, GL_LINE_STRIP, vec3(1.0f, 1.0f, 0.0f));
+		glPointSize(10.0f);
+		controlPoints->Draw(gpuProgram, GL_POINTS, vec3(1.0f, 0.0f, 0.0f));
+	}
+};
+class Gondola {
+	Spline* sL;
+	Geometry<vec3>* wheel;
+	Geometry<vec3>* spokes;
+	float t;
+	float velocity;
+	float angle;
+	const float g = 40.0f;
+	const float radius = 1.0f;
+	vec3 gondolaPos;
+	State state;
+public:
+	Gondola(Spline* spline) : sL(spline), t(0.01f), velocity(0.0f), angle(0.0f), state(WAITING) {
+		wheel = new Geometry<vec3>();
+		spokes = new Geometry<vec3>();
+		t = 0.01f;
+		if (sL->getPoints()->Vtx().size() > 1) {
+			gondolaPos = sL->evaluateSpline(t);
+		}
+		else gondolaPos = vec3(0, 0, 0);
+		for (int i = 0; i <= 256; i++) {
+			float theta = i * 2.0f * M_PI / 256;
+			wheel->Vtx().push_back(vec3(radius * cos(theta), radius * sin(theta), 1));
+		}
+		spokes->Vtx().push_back(vec3(-radius, 0, 1));
+		spokes->Vtx().push_back(vec3(radius, 0, 1));
+		spokes->Vtx().push_back(vec3(0, -radius, 1));
+		spokes->Vtx().push_back(vec3(0, radius, 1));
+		wheel->updateGPU();
+		spokes->updateGPU();
+	}
+	void updateSpokes() {
+		spokes->Vtx().clear();
+		for (int i = 0; i < 2; i++) {
+			float theta = angle + i * M_PI / 2;
+			vec3 spokeStart = vec3(gondolaPos.x + radius * cos(theta), gondolaPos.y + radius * sin(theta), 1);
+			vec3 spokeEnd = vec3(2 * gondolaPos.x - spokeStart.x, 2 * gondolaPos.y - spokeStart.y, 1.0f);
+			spokes->Vtx().push_back(spokeStart);
+			spokes->Vtx().push_back(spokeEnd);
+		}
+		spokes->updateGPU();
+	}
+	void del() {
+		if (state == FALLEN) {
+			velocity = 0;
+			t = 0.01f;
+			angle = 0;
+			gondolaPos = vec3(0, 0, 0);
+			for (int i = 0; i <= 256; i++) {
+				float theta = i * 2 * M_PI / 256;
+				wheel->Vtx().push_back(vec3(gondolaPos.x + radius * cos(theta), gondolaPos.y + radius * sin(theta), 1));
+			}
+			updateSpokes();
+			wheel->updateGPU();
+		}
+		else if (state == WAITING) {
+			velocity = 0;
+			t = 0.01f;
+			angle = 0;
+			vec3 tangent = sL->Tangent(t);
+			vec3 normal = normalize(vec3(-tangent.y, tangent.x, 0));
+			gondolaPos = sL->evaluateSpline(t) + normal * radius * 1.1f;
+			for (int i = 0; i <= 256; i++) {
+				float theta = i * 2 * M_PI / 256;
+				wheel->Vtx().push_back(vec3(gondolaPos.x + radius * cos(theta), gondolaPos.y + radius * sin(theta), 1));
+			}
+			updateSpokes();
+			wheel->updateGPU();
+		}
+	}
+	void start() {
+		if (state == WAITING || state == FALLEN) {
+			state = MOVING;
+			t = 0.01f;
+			velocity = 0.0f;
+			angle = 0.0f;
+			gondolaPos = sL->evaluateSpline(t);
+		}
+		updateSpokes();
+	}
+	void animate(float dt) {
+		if (state != MOVING) return;
+		wheel->Vtx().clear();
+		vec3 pos = sL->evaluateSpline(t);
+		vec3 tangent = sL->Tangent(t);
+		vec3 normal = normalize(vec3(-tangent.y, tangent.x, 0));
+		velocity += g * -tangent.y * dt;
+		float kappa = sL->Curvature(t);
+		float normalForce = g * dot(vec3(0, 1, 0), normal) + velocity * velocity * kappa;
+		if (velocity <= 0) {
+			printf("Velocity\n");
+			state = WAITING;
+			del();
+			return;
+		}
+		if (normalForce < 0) {
+			printf("normalForce\n");
+			state = FALLEN;
+			del();
+			return;
+		}
+		float ds = velocity * dt;
+		float tangentLength = length(tangent);
+		if (tangentLength > 0.0001f) {
+			t += ds / tangentLength;
+			angle += -ds / radius;
+		}
+		vec3 t_max = sL->getCurve()->Vtx().back();
+		if (pos.x == t_max.x && pos.y == t_max.y) {
+			printf("End\n");
+			state = WAITING;
+			del();
+			return;
+		}
+		gondolaPos = pos + normal * radius * 1.1f;
+		for (int i = 0; i <= 256; i++) {
+			float theta = i * 2 * M_PI / 256;
+			wheel->Vtx().push_back(vec3(gondolaPos.x + radius * cos(theta), gondolaPos.y + radius * sin(theta), 1));
+		}
+		updateSpokes();
+		wheel->updateGPU();
+		printf("t = %f, velocity = %f, normalForce = %f, position = (%f, %f)\n", t, velocity, normalForce, gondolaPos.x, gondolaPos.y);
+	}
+	void setLine(Spline* sline) { sL = sline; }
+	inline mat4 rotateXY(float fi) {
+		return mat4(vec4(cos(fi), sin(fi), 0, 0),
+			vec4(-sin(fi), cos(fi), 0, 0),
+			vec4(0, 0, 1, 0),
+			vec4(0, 0, 0, 1)
+		);
+	}
+	void Draw(GPUProgram* gpuProgram) {
+		if (state == FALLEN || sL->getPoints()->Vtx().size() < 2) {
+			gondolaPos = vec3(0, 0, 0);
+		}
+		wheel->Draw(gpuProgram, GL_LINE_LOOP, vec3(1, 1, 1));
+		wheel->Draw(gpuProgram, GL_TRIANGLE_FAN, vec3(0, 0, 1));
+		spokes->Draw(gpuProgram, GL_LINES, vec3(1, 1, 1));
+	}
+};
+class MyApp : public glApp {
+	GPUProgram* gpuProgram;
+	Gondola* gl;
+	Spline* sL;
+	vec3 picked;
+	vec3 tempPoint;
+	bool space = false;
+	Camera* camera;
+public:
+	MyApp() : glApp("HF_2") {}
+	void onInitialization() {
+		gpuProgram = new GPUProgram(vertSource, fragSource);
+		camera = new Camera(vec2(0, 0), vec2(20, 20));
+		sL = new Spline();/*
+		sL->addControlPoint(vec3(-0.9f, 0.8f, 1));
+		sL->addControlPoint(vec3(-0.5f, -0.6f, 1));
+		sL->addControlPoint(vec3(0.2f, -0.8f, 1));
+		sL->addControlPoint(vec3(0.7f, -0.1f, 1));
+		sL->addControlPoint(vec3(-0.15f, -0.15f, 1));
+		sL->addControlPoint(vec3(-0.3f, -0.5f, 1));
+		sL->addControlPoint(vec3(0.1f, -0.55f, 1));
+		sL->addControlPoint(vec3(0.9f, 0.85f, 1));*/
+		gl = new Gondola(sL);
+	}
+	void onDisplay() {
+		glClearColor(0, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		mat4 V = camera->V();
+		mat4 P = camera->P();
+		gpuProgram->setUniform(P * V, "MVP");
+		sL->draw(gpuProgram);
+		gl->Draw(gpuProgram);
+	}
+	void onKeyboard(int key) {
+		if (key == ' ') {
+			gl->start();
+			space = true;
+		}
+		else if (key = 'l') space = false;
+	}
+	void onMousePressed(MouseButton button, int pX, int pY) {
+		tempPoint = vec3(camera->screenToWorld(vec3(pX, pY, 1), winWidth, winHeight));
+		if (button == MOUSE_LEFT) {
+			sL->addControlPoint(tempPoint);
+			gl->setLine(sL);
+			refreshScreen();
+		}
+	}
+	void onTimeElapsed(float startTime, float endTime) {
+		float dt = 0.01f;
+		if (space)
+			for (float t = startTime; t < endTime; t += dt) {
+				float Dt = fmin(dt, endTime - t)/5;
+				gl->animate(Dt);
+			}
+		refreshScreen();
+	}
+};
+MyApp app;

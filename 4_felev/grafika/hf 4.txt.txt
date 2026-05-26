@@ -1,0 +1,383 @@
+#include "framework.h"
+#include <iostream>
+
+const char* vertSource = R"(
+    #version 330 core
+    layout(location = 0) in vec2 pos;
+    out vec2 tex;
+    void main() {
+        tex = (pos + 1.0) / 2.0;
+        gl_Position = vec4(pos, 0, 1);
+    }
+)";
+const char* fragSource = R"(
+    #version 330 core
+    in vec2 tex;
+    out vec4 outColor;
+    uniform sampler2D texImage;
+    void main() {
+        outColor = texture(texImage, tex);
+    }
+)";
+const int winWidth = 600, winHeight = 600;
+std::vector<vec3> image(winWidth* winHeight);
+struct Ray {
+    vec3 origin = vec3(0, 0, 0), dir = vec3(0.0f, 0.0f, 1.0f);
+    Ray() {};
+    Ray(const vec3& o, const vec3& d) : origin(o), dir(normalize(d)) {}
+};
+class Material {
+public:
+    vec3 kd = vec3(0.0f, 0.0f, 0.0f);
+    vec3 ks = vec3(0.0f, 0.0f, 0.0f);
+    vec3 F0 = vec3(0.0f, 0.0f, 0.0f);
+    vec3 ka = vec3(0.0f, 0.0f, 0.0f);
+    vec3 et = vec3(1.0f, 1.0f, 1.0f);
+    float shininess = 0, atlat = 0.0f;
+    bool reflective = false, refractive = false;
+    
+    Material() {}
+    Material(vec3 v) : kd(v) {}
+    Material(vec3 kd, vec3 ks, float s) : kd(kd), ks(ks), shininess(s) {}
+    Material(vec3 f0, vec3 eta, vec3 kap) : kd(0), ks(0), F0(f0), ka(kap), et(eta), shininess(0), atlat(0), reflective(true), refractive(false) {}
+    Material(float ior, float atl = 1.0f) { refractive = true; atlat = atl; et = vec3(ior, ior, ior); }
+};
+struct Hit {
+    float t;
+    vec3 position = vec3(0.0f, 0.0f, 0.0f), normal = vec3(0.0f, 1.0f, 0.0f);
+    Material* material;
+    Hit() : t(-1), material(nullptr) {}
+};
+class Camera {
+    vec3 eye, center, up;
+public:
+    Camera() : eye(0, 1, 4), center(0, 0, 0), up(0, 1, 0) {}
+    void Rotate(float angle) {
+        float r = length(vec2(eye.x, eye.z));
+        float phi = atan2(eye.z, eye.x) + angle;
+        eye.x = r * cos(phi);
+        eye.z = r * sin(phi);
+    }
+    Ray getRay(float x, float y) {
+        vec3 f = normalize(center - eye);
+        vec3 r = normalize(cross(f, up));
+        vec3 u = cross(r, f);
+        float tanFov = tan((float)M_PI / (4.0f) / 2);
+        vec3 dir = normalize(f + r * ((2 * x - 1) * tanFov) + u * ((2 * y - 1) * tanFov));
+        return { eye, dir };
+    }
+    vec3 getEye() const { return eye; }
+};
+class Intersectable {
+public:
+    Material* material;
+    Intersectable(Material* mate) : material(mate) {}
+    virtual Hit intersect(const Ray& ray) = 0;
+};
+class Plane : public Intersectable {
+    vec3 point, normal;
+    Material white, blue;
+public:
+    Plane(vec3 p, vec3 n) : Intersectable(nullptr), point(p), normal(normalize(n)),
+        white(Material(vec3(0.3f, 0.3f, 0.3f))), blue(Material(vec3(0.0f, 0.1f, 0.3f))) {
+        white.ka = white.kd * 3.0f;
+        blue.ka = blue.kd * 3.0f;
+    }
+    Hit intersect(const Ray& ray) override {
+        Hit hit;
+        float d = dot(ray.dir, normal);
+        if (abs(d) < 1e-6f) return hit;
+        float t = dot(point - ray.origin, normal) / d;
+        if (t <= 0) return hit;
+
+        vec3 pos = ray.origin + ray.dir * t;
+        if (abs(pos.x) > 10 || abs(pos.z) > 10) return hit;
+        hit.t = t;
+        hit.position = pos;
+        hit.normal = normal;
+        int ix = int(floor(pos.x + 10));
+        int iz = int(floor(pos.z + 10));
+        bool isWhite = (ix + iz) % 2 == 0;
+        hit.material = isWhite ? &white : &blue;
+        return hit;
+    }
+};
+class Cylinder : public Intersectable {
+    vec3 base, axis;
+    float radius, height;
+    Material* mat;
+public:
+    Cylinder(vec3 b, vec3 a, float r, float h, Material* m)
+        : Intersectable(m), base(b), axis(normalize(a)), radius(r), height(h) {
+    }
+    Hit intersect(const Ray& ray) override {
+        Hit hit;
+        vec3 p = ray.origin - base;
+        vec3 da = ray.dir - axis * dot(ray.dir, axis);
+        vec3 deltaPa = p - axis * dot(p, axis);
+        float A = dot(da, da);
+        float B = 2 * dot(da, deltaPa);
+        float C = dot(deltaPa, deltaPa) - radius * radius;
+        float disc = B * B - 4 * A * C;
+        if (disc >= 0) {
+            float sqrtDisc = sqrtf(disc);
+            float t1 = (-B - sqrtDisc) / (2 * A);
+            float t2 = (-B + sqrtDisc) / (2 * A);
+            for (float t : {t1, t2}) {
+                if (t > 0) {
+                    vec3 p = ray.origin + ray.dir * t;
+                    float proj = dot(p - base, axis);
+                    if (proj >= 0 && proj <= height) {
+                        hit.t = t;
+                        hit.position = p;
+                        vec3 cp = base + axis * proj;
+                        hit.normal = normalize(p - cp);
+                        hit.material = material;
+                        return hit;
+                    }
+                }
+            }
+        }
+        return hit;
+    }
+};
+class Cone : public Intersectable {
+    vec3 apex, axis;
+    float angle, height;
+public:
+    Cone(vec3 a, vec3 dir, float ang, float h, Material* m)
+        : Intersectable(m), apex(a), axis(normalize(dir)), angle(ang), height(h) {
+    }
+    Hit intersect(const Ray& ray) override {
+        Hit hit;
+        float tan2 = tan(angle) * tan(angle);
+        vec3 va = axis;
+        vec3 deltaP = ray.origin - apex;
+        float dv = dot(ray.dir, va);
+        float pv = dot(deltaP, va);
+        vec3 d_ = ray.dir - dv * va;
+        vec3 p_ = deltaP - pv * va;
+        float A = dot(d_, d_) - tan2 * dv * dv;
+        float B = 2 * (dot(d_, p_) - tan2 * dv * pv);
+        float C = dot(p_, p_) - tan2 * pv * pv;
+        float disc = B * B - 4 * A * C;
+        if (disc >= 0) {
+            float sqrtDisc = sqrtf(disc);
+            float t1 = (-B - sqrtDisc) / (2 * A);
+            float t2 = (-B + sqrtDisc) / (2 * A);
+            for (float t : {t1, t2}) {
+                if (t > 0) {
+                    vec3 p = ray.origin + ray.dir * t;
+                    float hProj = dot(p - apex, axis);
+                    if (hProj >= 0 && hProj <= height) {
+                        hit.t = t;
+                        hit.position = p;
+                        vec3 cp = apex + axis * hProj;
+                        vec3 v = normalize(p - cp);
+                        hit.normal = normalize(v - axis * dot(v, axis));
+                        hit.material = material;
+                        return hit;
+                    }
+                }
+            }
+        }
+        return hit;
+    }
+};
+std::vector<Intersectable*> objects;
+Camera* camera;
+void shadow(vec3& color, const vec3& lD, const Hit& hit, const vec3& n, const vec3& v, float light, float cosNH, float cosNL) {
+    Ray shadowRay(hit.position + n * 1e-4f, lD);
+    bool inShadow = false;
+    for (Intersectable* obj : objects) {
+        Hit shadowHit = obj->intersect(shadowRay);
+        if (shadowHit.t > 0) {
+            inShadow = true;
+            break;
+        }
+    }
+    if (!inShadow) {
+        float cosTheta = dot(n, lD);
+        if (cosTheta > 0) {
+            color += vec3(light) * (hit.material->kd * cosNL + hit.material->ks * powf(cosNH, hit.material->shininess));
+        }
+        vec3 h = normalize(lD + v);
+        float cosDelta = dot(n, h);
+        if (cosDelta > 0) {
+            color += hit.material->ks * light * pow(cosDelta, hit.material->shininess);
+        }
+    }
+}
+vec3 Fresnel(const vec3& I, const vec3& N, const vec3& eta, const vec3& k) {
+    float cosTheta = dot(N, -I);
+    vec3 cos2 = vec3(cosTheta * cosTheta);
+    vec3 t0 = eta* eta - k * k - (vec3(1.0f, 1.0f, 1.0f) - cos2);
+    vec3 eta2k2 = eta * eta * k * k;
+    vec3 t1 = vec3(sqrtf(t0.x * t0.x + 4.0f * eta2k2.x), sqrtf(t0.y * t0.y + 4.0f * eta2k2.y), sqrtf(t0.z * t0.z + 4.0f * eta2k2.z));
+    vec3 a = vec3(sqrtf(0.5f * (t1.x + t0.x)), sqrtf(0.5f * (t1.y + t0.y)), sqrtf(0.5f * (t1.z + t0.z)));
+    vec3 szamlalo = (t1 + cos2) - 2.0f * cosTheta * a;
+    vec3 nevezo = (t1 + cos2) + 2.0f * cosTheta * a;
+    return vec3(szamlalo.x / nevezo.x, szamlalo.y / nevezo.y, szamlalo.z / nevezo.z);
+}
+vec3 Reflect(const vec3& I, const vec3& N) {
+    return I - 2.0f * dot(I, N) * N;
+}
+bool refractDir(vec3 I, vec3 N, float ior, vec3& T) {
+    float cosi = dot(I, N);
+    float etai = 1.0f, etat = ior;
+    vec3 n = N;
+    if (cosi < 0) { cosi = -cosi; }
+    else { std::swap(etai, etat); n = -N; }
+    float eta = etai / etat;
+    float k = 1 - eta * eta * (1 - cosi * cosi);
+    if (k < 0) return false;
+    T = normalize(eta * I + (eta * cosi - sqrt(k)) * n);
+    return true;
+}
+vec3 trace(const Ray& ray, int depth = 0);
+void reflect(const Ray& ray, const vec3& n, vec3& color, int depth, const Hit& hit) {
+    vec3 reflDir = Reflect(ray.dir, n);
+    vec3 reflColor = trace(Ray(hit.position + n * 1e-4f, reflDir), depth + 1);
+    vec3 F = Fresnel(ray.dir, n, hit.material->et, hit.material->ka);
+    color += reflColor * F + 0.3f * hit.material->kd + color;
+}
+void refract(const Ray& ray, const vec3& n, vec3& color, int depth, const Hit& hit, float cosNH, float cosNL) {
+    float atlat = hit.material->atlat;
+    float ior = fabs(atlat);
+    vec3 normal = (atlat < 0) ? -n : n;
+    float etaRatio = (atlat < 0) ? hit.material->et.x : 1.0f / hit.material->et.x;
+    vec3 localColor = vec3(0.4f, 0.4f, 0.4f) * (hit.material->kd * 3.0f) + vec3(2.0f, 2.0f, 2.0f) * (hit.material->kd * cosNL + hit.material->ks * powf(cosNH, hit.material->shininess));
+    vec3 reflectColor = trace(Ray(hit.position + normal * 1e-4f, Reflect(-ray.dir, normal)), depth + 1);
+    float cosTheta = fabs(dot(-ray.dir, normal));
+    float k = 1.0f - etaRatio * etaRatio * (1.0f - cosTheta * cosTheta);
+    if (k >= 0.0f) {
+        vec3 refractDir = normalize(etaRatio * ray.dir + (etaRatio * cosTheta - sqrtf(k)) * normal);
+        vec3 on = (dot(ray.dir, normal) < 0) ? -normal : normal;
+        vec3 refractColor = trace(Ray(hit.position + on * 1e-4f, refractDir), depth + 1);
+        float Fr = powf(1.0f - ior, 5.0f);
+        color += (1.0f - atlat) * localColor + atlat * ((1.0f - Fr) * refractColor + Fr * reflectColor);
+    } else {
+        color += reflectColor;
+    }
+}
+vec3 shade(const Hit& hit, const Ray& ray, int depth) {
+    vec3 lightDir = normalize(vec3(1, 1, 1));
+    float lightIntensity = 2.0f;
+    float ambientIntensity = 0.4f;
+    vec3 n = normalize(hit.normal);
+    vec3 v = normalize(camera->getEye() - hit.position);
+    vec3 height = normalize(lightDir + v);
+    float cosNL = fmax(dot(n, lightDir), 0.0f);
+    float cosNH = fmax(dot(n, height), 0.0f);
+    vec3 amb = vec3(ambientIntensity, ambientIntensity, ambientIntensity);
+    vec3 color(0);
+    color = amb * (hit.material->kd * 3.0f);
+    if (hit.t < 0) return amb;
+    Ray shadowRay(hit.position + n * 1e-4f, lightDir);
+    bool inShadow = false;
+    for (Intersectable* obj : objects) {
+        Hit shadowHit = obj->intersect(shadowRay);
+        if (shadowHit.t > 0) {
+            inShadow = true;
+            break;
+        }
+    }
+    if (!inShadow) {
+        float cosTheta = dot(n, lightDir);
+        if (cosTheta > 0) {
+            color += vec3(lightIntensity) * (hit.material->kd * cosNL + hit.material->ks * powf(cosNH, hit.material->shininess));
+        }
+        vec3 h = normalize(lightDir + v);
+        float cosDelta = dot(n, h);
+        if (cosDelta > 0) {
+            color += hit.material->ks * lightIntensity * pow(cosDelta, hit.material->shininess);
+        }
+    }
+    //shadow(color, lightDir, hit, n, v, lightIntensity, cosNL, cosNH);
+    if (hit.material->reflective) {
+        reflect(ray, n, color, depth, hit);
+    }
+    if (hit.material->refractive) {
+        refract(ray, n, color, depth, hit, cosNL, cosNH);
+    }
+    return color;
+}
+vec3 trace(const Ray& ray, int depth) {
+    if (depth > 5) return vec3(0.0f);
+    Hit closestHit;
+    for (Intersectable* obj : objects) {
+        Hit hit = obj->intersect(ray);
+        if (hit.t > 0 && (closestHit.t < 0 || hit.t < closestHit.t)) {
+            closestHit = hit;
+        }
+    }
+    return closestHit.t > 0 ? shade(closestHit, ray, depth) : vec3(0.4f, 0.4f, 0.4f);
+}
+void render() {
+    for (int y = 0; y < winHeight; y++) {
+        for (int x = 0; x < winWidth; x++) {
+            float fx = (x + 0.5f) / winWidth;
+            float fy = (y + 0.5f) / winHeight;
+            Ray ray = camera->getRay(fx, fy);
+            vec3 col = trace(ray);
+            image[y * winWidth + x] = col;
+        }
+    }
+}
+class MyApp : public glApp {
+private:
+    GPUProgram* gpuProgram;
+    unsigned int vao = 0, texture = 0;
+public:
+    MyApp() : glApp("HF_4") {}
+    void onInitialization() {
+        gpuProgram = new GPUProgram(vertSource, fragSource);
+        camera = new Camera();
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        float quad[] = { -1,-1, 1,-1, -1,1, 1,1 };
+        GLuint vbo;
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        static Material arany(vec3(0.0f, 0.0f, 0.0f), vec3(0.17f, 0.35f, 1.5f), vec3(3.1f, 2.7f, 1.9f));
+        static Material viz(1.3f, 1.0f);
+        static Material muanyag(vec3(0.3f, 0.2f, 0.1f), vec3(2.0f, 2.0f, 2.0f), 50.0f);
+        static Material cian(vec3(0.1f, 0.2f, 0.3f), vec3(2.0f, 2.0f, 2.0f), 100.0f);
+        static Material magenta(vec3(0.3f, 0.0f, 0.2f), vec3(2.0f, 2.0f, 2.0f), 20.0f);
+        objects.push_back(new Plane(vec3(0, -1, 0), vec3(0, 1, 0)));
+        objects.push_back(new Cylinder(vec3(1, -1, 0), vec3(0.1, 1, 0), 0.3f, 2.0f, &arany));
+        objects.push_back(new Cylinder(vec3(0, -1, -0.8), vec3(-0.2, 1, -0.1), 0.3f, 2.0f, &viz));
+        objects.push_back(new Cylinder(vec3(-1, -1, 0), vec3(0, 1, 0.1), 0.3f, 2.0f, &muanyag));
+        objects.push_back(new Cone(vec3(0, 1, 0), vec3(-0.1, -1, -0.05), 0.2f, 2.0f, &cian));
+        objects.push_back(new Cone(vec3(0, 1, 0.8), vec3(0.2, -1, 0), 0.2f, 2.0f, &magenta));
+        //camera->Rotate((float)M_PI / 4.0f);
+        //camera->Rotate((float)M_PI / 4.0f);
+        //camera->Rotate((float)M_PI / 4.0f);
+        //camera->Rotate((float)M_PI / 4.0f);
+        render();
+    }
+    void onDisplay() {
+        glClearColor(0.4f, 0.4f, 0.4f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, winWidth, winHeight, 0, GL_RGB, GL_FLOAT, &image[0]);
+        gpuProgram->Use();
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    void onKeyboard(int key) {
+        if (key == 'a') {
+            camera->Rotate((float) M_PI/(4.0f));
+            render();
+        }
+        refreshScreen();
+    }
+};
+MyApp app;

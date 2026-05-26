@@ -1,0 +1,342 @@
+#include "framework.h"
+#include <iostream>
+
+const char* vertSource = R"(
+	#version 330
+	precision highp float;
+
+	layout(location = 0) in vec2 cP;
+	out vec2 texCoords;
+
+	void main() {
+		gl_Position = vec4(cP.x, cP.y, 0, 1);
+        texCoords = (cP + 1.0) / 2.0;
+	}
+)";
+const char* fragSource = R"(
+	#version 330 core
+	precision highp float;
+	uniform bool isMap;
+	uniform sampler2D mapTexture;
+	uniform float now;
+	uniform vec3 color;
+	in vec2 texCoords;
+	out vec4 fragmentColor;
+
+	vec4 applyLighting(vec4 texColor, vec2 coords, float now) {
+		float longitude = coords.x * 360.0 - 180.0;
+		float y = coords.y * 2.0 - 1.0;
+		float latitude = -degrees(atan(sinh(y * 3.1415926)));
+		float sunLon = radians(mod(now * 15.0f + 180.0, 360.0));
+		float sunLat = radians(23.0f * cos(sunLon));
+		vec3 sunDir = vec3(cos(sunLat) * cos(sunLon), cos(sunLat) * sin(sunLon), sin(sunLat));
+		vec3 pointDir = vec3(cos(radians(latitude)) * cos(radians(longitude)), cos(radians(latitude)) * sin(radians(longitude)), sin(radians(latitude)));
+		float cosAngle = dot(sunDir, pointDir);
+		if (cosAngle < 0.0) {
+			texColor.rgb *= 0.5;
+		}
+		return texColor;
+	}
+	void main() {
+		if (isMap) {
+			vec4 texColor = texture(mapTexture, texCoords);
+			fragmentColor = applyLighting(texColor, texCoords, now);
+		} else {
+			fragmentColor = vec4(color.x, color.y, color.z, 1.0f);
+		}
+	}
+)";
+const float winWidth = 600.0f, winHeight = 600.0f;
+float now = 0.0f;
+
+vec3 static screenToVirtual(const vec3& screenPos) {
+	float longitude = screenPos.x * 180.0f;
+	float latitude = atanf(sinh(screenPos.y * M_PI)) * (180.0f / M_PI);
+	return vec3(longitude, latitude, 1.0f);
+}
+vec3 static virtualToScreen(const vec3& virtualPos) {
+	float x = virtualPos.x / 180.0f;
+	float y = log(tan((virtualPos.y + 90.0f) * (M_PI / 360.0f))) / M_PI;
+	return vec3(x, y, 1.0f);
+}
+vec3 static worldToScreen(const vec3& screenPos, float screenWidth, float screenHeight) {
+	float normalizedX = (screenPos.x / screenWidth) * 2.0f - 1.0f;
+	float normalizedY = 1.0f - (screenPos.y / screenHeight) * 2.0f;
+	return vec3(normalizedX, normalizedY, 1.0f);
+}
+float static clamp(float value, float minVal, float maxVal) {
+	return value < minVal ? minVal : (value > maxVal ? maxVal : value);
+}
+class Station {
+private:
+	Geometry<vec3>* stations;
+public:
+	Station() {
+		stations = new Geometry<vec3>();
+	}
+	Geometry<vec3>* getStations() { return stations; }
+	void addStation(const vec3& p) {
+		stations->Vtx().push_back(p);
+		stations->updateGPU();
+		vec3 a = screenToVirtual(stations->Vtx().back());
+		printf("Station in the World: %f, %f\n", a.x, a.y);
+		printf("Station in the Screen: %f, %f\n", stations->Vtx().back().x, stations->Vtx().back().y);
+	}
+	void draw(GPUProgram* gpuprogram) {
+		gpuprogram->setUniform(false, "isMap");
+		glPointSize(10.0f);
+		stations->Draw(gpuprogram, GL_POINTS, vec3(1, 0, 0));
+	}
+};
+class Route {
+private:
+	Geometry<vec3>* routes;
+public:
+	Route() {
+		routes = new Geometry<vec3>();
+	}
+	void addRouteSegment(const vec3& newPoint) {
+		if (routes->Vtx().size() > 0) {
+			int numSegments = 100;
+			vec3 p1 = screenToVirtual(routes->Vtx().back());
+			vec3 p2 = screenToVirtual(newPoint);
+			vec3 p1_gombe = gombe(p1);
+			vec3 p2_gombe = gombe(p2);
+			float angle = acos(clamp(dot(normalize(p1_gombe), normalize(p2_gombe)), -1.0f, 1.0f));
+			Geometry<vec3>* newRoute = new Geometry<vec3>();
+			for (int i = 0; i <= numSegments; ++i) {
+				float t = float(i) / float(numSegments);
+				vec3 interp_gombe = slerp(normalize(p1_gombe), normalize(p2_gombe), t, angle);
+				newRoute->Vtx().push_back(virtualToScreen(gombbol(interp_gombe)));
+			}
+			Jump(newRoute);
+			printf("Distance: %.0f km\n", distance(p1_gombe, p2_gombe));
+		}
+		else {
+			routes->Vtx().push_back(newPoint);
+		}
+	}
+	void Jump(Geometry<vec3>* route) {
+		Geometry<vec3>* cleaned = new Geometry<vec3>();
+		const float threshold = 1.5f;
+		for (int i = 0; i < int(route->Vtx().size()); ++i) {
+			if (i > 0) {
+				float dx = fabs(route->Vtx()[i].x - route->Vtx()[i - 1].x);
+				if (dx > threshold) cleaned->Vtx().push_back(vec3(NAN, NAN, NAN));
+			}
+			cleaned->Vtx().push_back(route->Vtx()[i]);
+		}
+		route->updateGPU();
+		if (cleaned->Vtx().size() == route->Vtx().size()) {
+			for (const auto& p : cleaned->Vtx()) {
+				routes->Vtx().push_back(p);
+			}
+		}
+		else {
+			Geometry<vec3>* firstPart = new Geometry<vec3>();
+			Geometry<vec3>* secondPart = new Geometry<vec3>();
+			bool splitAtFirst = false;
+			for (size_t i = 0; i < cleaned->Vtx().size(); ++i) {
+				if (i > 0 && fabs(cleaned->Vtx()[i].x - cleaned->Vtx()[i - 1].x) > threshold) {
+					splitAtFirst = true;
+					continue;
+				}
+				if (splitAtFirst) secondPart->Vtx().push_back(cleaned->Vtx()[i]);
+				else firstPart->Vtx().push_back(cleaned->Vtx()[i]);
+			}
+			for (const auto& p : firstPart->Vtx()) {
+				routes->Vtx().push_back(p);
+			}
+			for (const auto& p : secondPart->Vtx()) {
+				routes->Vtx().push_back(p);
+			}
+		}
+		routes->updateGPU();
+	}
+	vec3 gombe(const vec3& mercatorPos) {
+		float lat = mercatorPos.y * (M_PI / 180.0f);
+		float lon = mercatorPos.x * (M_PI / 180.0f);
+		float x = cos(lat) * cos(lon);
+		float y = cos(lat) * sin(lon);
+		float z = sin(lat);
+		return vec3(x, y, z);
+	}
+	vec3 slerp(const vec3& p1, const vec3& p2, float t, float omega) {
+		if (fabs(omega) < 1e-6) return p1;
+		float sinOmega = sin(omega);
+		return (sin((1 - t) * omega) / sinOmega) * p1 + (sin(t * omega) / sinOmega) * p2;
+	}
+	vec3 gombbol(const vec3& spherePos) {
+		float lat = asin(spherePos.z) * (180.0f / M_PI);
+		float lon = atan2(spherePos.y, spherePos.x) * (180.0f / M_PI);
+		return vec3(lon, lat, 1.0f);
+	}
+	float distance(const vec3& p1, const vec3& p2) {
+		float circumference = 40000.0f;
+		float cos_c = sin(p2.y) * sin(p1.y) + cos(p2.y) * cos(p1.y) * cos(p2.x - p1.x);
+		float angle = acos(clamp(cos_c, -1.0f, 1.0f));
+		return angle * circumference / (2.0f * M_PI);
+	}
+	void draw(GPUProgram* gpuprogram) {
+		gpuprogram->setUniform(false, "isMap");
+		glLineWidth(3.0f);
+		routes->Draw(gpuprogram, GL_LINE_STRIP, vec3(1, 1, 0));
+	}
+};
+class Map : public Texture {
+private:
+	unsigned int textureId;
+	int width, height;
+public:
+	Map(int w, int h, std::vector<unsigned char> data) : Texture(w, h) {
+		width = w;
+		height = h; 
+		decodeMap(data);
+	}
+	void decodeMap(std::vector<unsigned char> data) {
+		int index = 0, idx = 0;
+		std::vector<vec3> image(width * height);
+		vec3 pixel;
+		for (int i = 0; i < height; ++i) {
+			for (int j = 0; j < width; ++j) {
+				if (index >= int(data.size())) break;
+				unsigned char byte = (index < int(data.size())) ? data[index++] : 0;
+				unsigned char H = byte >> 2;
+				unsigned char I = byte & 0x03;
+				if (I == 0) pixel = vec3(1.0f, 1.0f, 1.0f);
+				else if(I == 1) pixel = vec3(0.0f, 0.0f, 1.0f);
+				else if(I == 2) pixel = vec3(0.0f, 1.0f, 0.0f);
+				else if(I == 3) pixel = vec3(0.0f, 0.0f, 0.0f);
+				for (int b = 0; b < H + 1; ++b, ++idx) {
+					image[idx] = pixel;
+				}
+			}
+		}
+		uploadTexture(width, height, image);
+	}
+	void uploadTexture(int width, int height, std::vector<vec3> image) {
+		glGenTextures(1, &textureId);
+		glBindTexture(GL_TEXTURE_2D, textureId);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, image.data());
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	}
+	void draw(GPUProgram* gpuProgram) {
+		glBindTexture(GL_TEXTURE_2D, textureId);
+		bool isMap = true;
+		gpuProgram->setUniform(isMap, "isMap");
+		gpuProgram->setUniform(0, "mapTexture");
+		drawSquareTextured();
+	}
+	void drawSquareTextured() {
+		float vertices[] = {
+			-1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+			-1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+			1.0f, 1.0f, 0.0f, 1.0f, 1.0f,
+			-1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+			1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+			1.0f, 1.0f, 0.0f, 1.0f, 1.0f
+		};
+		unsigned int VAO, VBO;
+		glGenVertexArrays(1, &VAO);
+		glGenBuffers(1, &VBO);
+		glBindVertexArray(VAO);
+		glBindBuffer(GL_ARRAY_BUFFER, VBO);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+		glEnableVertexAttribArray(1);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+	}
+};
+class MyApp : public glApp {
+private:
+	GPUProgram* gpuProgram;
+	Station* stations;
+	Route* routes;
+	Map* map;
+	vec3 tempPoint;
+public:
+	MyApp() : glApp("HF_3") {}
+	void onInitialization() {
+		gpuProgram = new GPUProgram(vertSource, fragSource);
+		std::vector<unsigned char> data = {
+			252, 252, 252, 252, 252, 252, 252, 252, 252, 0, 9, 80, 1, 148, 13, 72, 13, 140, 25, 60, 21, 132, 41, 12, 1, 28,
+			25, 128, 61, 0, 17, 4, 29, 124, 81, 8, 37, 116, 89, 0, 69, 16, 5, 48, 97, 0, 77, 0, 25, 8, 1, 8, 253, 253, 253, 253,
+			101, 10, 237, 14, 237, 14, 241, 10, 141, 2, 93, 14, 121, 2, 5, 6, 93, 14, 49, 6, 57, 26, 89, 18, 41, 10, 57, 26,
+			89, 18, 41, 14, 1, 2, 45, 26, 89, 26, 33, 18, 57, 14, 93, 26, 33, 18, 57, 10, 93, 18, 5, 2, 33, 18, 41, 2, 5, 2, 5, 6,
+			89, 22, 29, 2, 1, 22, 37, 2, 1, 6, 1, 2, 97, 22, 29, 38, 45, 2, 97, 10, 1, 2, 37, 42, 17, 2, 13, 2, 5, 2, 89, 10, 49,
+			46, 25, 10, 101, 2, 5, 6, 37, 50, 9, 30, 89, 10, 9, 2, 37, 50, 5, 38, 81, 26, 45, 22, 17, 54, 77, 30, 41, 22, 17, 58,
+			1, 2, 61, 38, 65, 2, 9, 58, 69, 46, 37, 6, 1, 10, 9, 62, 65, 38, 5, 2, 33, 102, 57, 54, 33, 102, 57, 30, 1, 14, 33, 2,
+			9, 86, 9, 2, 21, 6, 13, 26, 5, 6, 53, 94, 29, 26, 1, 22, 29, 0, 29, 98, 5, 14, 9, 46, 1, 2, 5, 6, 5, 2, 0, 13, 0, 13,
+			118, 1, 2, 1, 42, 1, 4, 5, 6, 5, 2, 4, 33, 78, 1, 6, 1, 6, 1, 10, 5, 34, 1, 20, 2, 9, 2, 12, 25, 14, 5, 30, 1, 54, 13, 6,
+			9, 2, 1, 32, 13, 8, 37, 2, 13, 2, 1, 70, 49, 28, 13, 16, 53, 2, 1, 46, 1, 2, 1, 2, 53, 28, 17, 16, 57, 14, 1, 18, 1, 14,
+			1, 2, 57, 24, 13, 20, 57, 0, 2, 1, 2, 17, 0, 17, 2, 61, 0, 5, 16, 1, 28, 25, 0, 41, 2, 117, 56, 25, 0, 33, 2, 1, 2, 117,
+			52, 201, 48, 77, 0, 121, 40, 1, 0, 205, 8, 1, 0, 1, 12, 213, 4, 13, 12, 253, 253, 253, 141
+		};
+		map = new Map(64, 64, data);
+		routes = new Route();
+		stations = new Station();
+	}
+	void onDisplay() {
+		glClearColor(0, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		map->draw(gpuProgram);
+		routes->draw(gpuProgram);
+		stations->draw(gpuProgram);
+	}
+	void onMousePressed(MouseButton button, int pX, int pY) {
+		tempPoint = vec3(worldToScreen(vec3(pX, pY, 1), winWidth, winHeight));
+		if (button == MOUSE_LEFT) {
+			stations->addStation(tempPoint);
+			routes->addRouteSegment(tempPoint);
+		}
+		refreshScreen();
+	}
+	void onKeyboard(int key) {
+		switch (key) {
+		case '0':
+			stations->addStation(vec3(-0.8f, -0.8f, 1));
+			stations->addStation(vec3(0.8f, 0.8f, 1));
+			stations->addStation(vec3(0.8f, -0.8f, 1));
+			stations->addStation(vec3(-0.8f, 0.8f, 1));
+			stations->addStation(vec3(0, 0, 1));
+			stations->addStation(vec3(0, -1, 1));
+			stations->addStation(vec3(-1, 0, 1));
+			stations->addStation(vec3(-1, -1, 1));
+			break;
+		case '1': routes->addRouteSegment(vec3(-0.8f, -0.8f, 1)); break;
+		case '2': routes->addRouteSegment(vec3(0.8f, 0.8f, 1)); break;
+		case '3': routes->addRouteSegment(vec3(0.8f, -0.8f, 1)); break;
+		case '4': routes->addRouteSegment(vec3(-0.8f, 0.8f, 1)); break;
+		case '5': routes->addRouteSegment(vec3(-0.8f, -0.8f, 1)); break;
+		case '8':
+			routes->addRouteSegment(vec3(-1, -1, 1));
+			routes->addRouteSegment(vec3(0, -1, 1));
+			break;
+		case '9':
+			routes->addRouteSegment(vec3(0, 0, 1));
+			routes->addRouteSegment(vec3(-1, 0, 1));
+			break;
+		case 'n':
+			now += 1.0f;
+			if (now >= 24.0f) now = 0.0f;
+			gpuProgram->setUniform(now, "now");
+			break;
+		case 'b':
+			stations->addStation(vec3(0.180000, 0.413333, 1));
+			routes->addRouteSegment(vec3(0.180000, 0.413333, 1));
+			stations->addStation(vec3(-0.650000, 0.330000, 1));
+			routes->addRouteSegment(vec3(-0.650000, 0.330000, 1));
+			stations->addStation(vec3(-0.286667, -0.066667, 1));
+			routes->addRouteSegment(vec3(-0.286667, -0.066667, 1));
+			stations->addStation(vec3(0.683333, 0.320000, 1));
+			routes->addRouteSegment(vec3(0.683333, 0.320000, 1));
+			stations->addStation(vec3(0.186667, 0.416667, 1));
+			routes->addRouteSegment(vec3(0.186667, 0.416667, 1));
+			break;
+		}
+		refreshScreen();
+	}
+}; MyApp app;

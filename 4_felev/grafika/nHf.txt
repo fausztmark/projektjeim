@@ -1,0 +1,788 @@
+#include "framework.h"
+#include <vector>
+#include <random>
+#include <algorithm>
+
+const char* vertSource = R"(
+    #version 330
+    precision highp float;
+
+    layout(location = 0) in vec2 cP;
+
+    uniform mat4 VP;          // ViewProjection mátrix (kamera)
+    uniform mat4 Model;       // Model transzformáció (objektum)
+    uniform mat4 SnailModel;  // Csigára külön model
+    uniform bool snail;
+
+    void main() {
+        if (snail)
+            gl_Position = VP * SnailModel * vec4(cP, 0.0, 1.0);
+        else
+            gl_Position = VP * Model * vec4(cP, 0.0, 1.0);
+    }
+)";
+const char* fragSource = R"(
+    #version 330
+    precision highp float;
+
+    uniform vec3 color;
+    out vec4 fragmentColor;
+
+    void main() {
+        fragmentColor = vec4(color, 1);
+    }
+)";
+const int winWidth = 600, winHeight = 600;
+float zoom = 1.0f;
+float groundLevel = -0.7f;
+struct Branch {
+    vec2 start, end;
+    float voltage;
+    int depth;
+    float appearTime = 0.0f;
+    float birthTime;
+    Branch(vec2 s, vec2 e, float v, int d, float at = 0.0f, float b = 0.0f)
+        : start(s), end(e), voltage(v), depth(d), appearTime(at), birthTime(b) {
+    }
+};
+struct SnailSegment {
+    vec2 position;
+    float size;
+    int level;
+};
+std::vector<Branch> branches;
+std::vector<SnailSegment> snailSegments;
+std::vector<Branch> ballLightningPoints;
+std::optional<vec2> segmentIntersect(const Branch& b1, const Branch& b2) {
+    vec2 A = b1.start;
+    vec2 B = b1.end;
+    vec2 C = b2.start;
+    vec2 D = b2.end;
+    vec2 AB = B - A;
+    vec2 CD = D - C;
+    vec2 AC = C - A;
+    float det = AB.x * CD.y - AB.y * CD.x;
+    if (std::abs(det) < 1e-6f) {
+        return std::nullopt;
+    }
+    float t = (AC.x * CD.y - AC.y * CD.x) / det;
+    float u = (AC.x * AB.y - AC.y * AB.x) / det;
+    if (t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f) {
+        vec2 intersection = A + t * AB;
+        return intersection;
+    }
+    return std::nullopt;
+}
+class Camera {
+private:
+    vec3 eye = vec3(0.0f, 0.0f, 2.0f);
+    vec3 lookat = vec3(0.0f, 0.0f, 0.0f);
+    vec3 up = vec3(0.0f, 1.0f, 0.0f);
+    float fov = 45.0f * (float)M_PI / 180.0f;
+    float aspect = 1.0f;
+    float near = 0.1f;
+    float far = 100.0f;
+    float moveStep = 0.1f;
+public:
+    mat4 getVPMatrix() { return P() * V(); }
+    void setZoom(float z) { eye.z = 2.0f / z; }
+    mat4 V() { return lookAt(eye, lookat, up); }
+    mat4 P() { return perspective(fov, aspect, near, far); }
+    void move(float dx, float dy) {
+        eye.x += dx;
+        eye.y += dy;
+        lookat.x += dx;
+        lookat.y += dy;
+    }
+    vec3 screenToWorld(const vec3& screenPos) {
+        float normalizedX = (screenPos.x / winWidth) * 2.0f - 1.0f;
+        float normalizedY = 1.0f - (screenPos.y / winHeight) * 2.0f;
+        float normalizedZ = screenPos.z * 2.0f - 1.0f;
+        vec4 ndcPos = vec4(normalizedX, normalizedY, normalizedZ, 1.0f);
+        mat4 invVP = inverse(P() * V());
+        vec4 worldPos = invVP * ndcPos;
+        worldPos /= worldPos.w;
+
+        return vec3(worldPos);
+    }
+    vec3 getEye() { return eye; }
+    void moveLeft() { move(-moveStep, 0.0f); }
+    void moveRight() { move(moveStep, 0.0f); }
+    void moveUp() { move(0.0f, moveStep); }
+    void moveDown() { move(0.0f, -moveStep); }
+};
+class Flash {
+private:
+    int ballNum = 0;
+    int time = 0;
+    float currentAnimationTime = 0.0f;
+    bool animationFinished = true;
+public:
+    std::mt19937 hash_rng(vec2 position) {
+        std::seed_seq seed = {
+            static_cast<unsigned>(position.x * 10000),
+            static_cast<unsigned>(position.y * 10000)
+        };
+        return std::mt19937(seed);
+    }
+    void generateFractalLightning(vec2 start, vec2 dir, int depth, float voltage, float length, int maxDepth = 8) {
+        const int branchesCount = 2;
+        const float hausdorffDim = 1.3f;
+        float timePerDepth = 0.15f;
+        if (depth >= maxDepth || length < 0.01f) {
+            vec2 end = start + dir * length;
+            branches.emplace_back(start, end, voltage, depth, static_cast<float>(depth) * timePerDepth, currentAnimationTime);
+            return;
+        }
+        std::mt19937 localGen = hash_rng(start * zoom);
+        std::uniform_real_distribution<float> angleDist(-0.3f, 0.3f);
+        std::uniform_real_distribution<float> voltageDist(0.6f, 0.9f);
+        float scale = pow(1.0f / branchesCount, 1.0f / hausdorffDim);
+        vec2 currentStart = start;
+        for (int i = 0; i < branchesCount; ++i) {
+            float angle = angleDist(localGen) + (i == 0 ? 0.3f : -0.3f);
+            float ca = cos(angle), sa = sin(angle);
+            vec2 newDir = vec2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca);
+            float newLength = length * scale;
+            vec2 end = currentStart + newDir * newLength;
+            branches.emplace_back(start, end, voltage, depth, static_cast<float>(depth) * timePerDepth, currentAnimationTime);
+            generateFractalLightning(end, newDir, depth + 1, voltage * voltageDist(localGen), newLength, maxDepth);
+            currentStart = end;
+        }
+    }
+    void animate(float Dt) {
+        currentAnimationTime += Dt;
+        if (!animationFinished) {
+            animationFinished = true;
+            for (const auto& branch : branches) {
+                if (currentAnimationTime < branch.appearTime) {
+                    animationFinished = false;
+                    break;
+                }
+            }
+        }
+    }
+    void generateFractalBallLightning(vec2 center, float radius, int segments) {
+        std::mt19937 localGen = hash_rng(center * zoom);
+        std::uniform_real_distribution<float> angleJitter(-0.2f, 0.2f);
+        std::uniform_real_distribution<float> radiusJitter(-0.1f * radius, 0.1f * radius);
+        for (int i = 0; i < segments; ++i) {
+            float angle1 = (2.0f * (float) M_PI * i) / segments + angleJitter(localGen);
+            float angle2 = (2.0f * (float) M_PI * (i + 1)) / segments + angleJitter(localGen);
+            float r1 = radius + radiusJitter(localGen);
+            float r2 = radius + radiusJitter(localGen);
+            vec2 p1 = center + vec2(cos(angle1), sin(angle1)) * r1;
+            vec2 p2 = center + vec2(cos(angle2), sin(angle2)) * r2;
+            ballLightningPoints.push_back({ p1, p2, 1.0f, -1 });
+        }
+    }
+    void isBallLightning() {
+        const int segmentCount = 150;
+        const float ringRadius = 0.1f;
+        const float ringSegmentLength = 1.0f;
+        const int brokenSegments = 15;
+        for (size_t i = 0; i < branches.size(); ++i) {
+            if (branches[i].depth > 4) continue;
+            for (size_t j = i + 1; j < branches.size(); ++j) {
+                if (branches[j].depth > 4) continue;
+                if (branches[i].start.y * branches[j].start.y >= 0) continue;
+                std::optional<vec2> intersection = segmentIntersect(branches[i], branches[j]);
+                if (!intersection) {
+                    continue;
+                }
+                else ballNum++;
+                if(ballNum == 100) {
+                    ballLightningPoints.clear();
+                    vec2 center = *intersection;
+                    generateFractalBallLightning(center, ringRadius, segmentCount);
+                    ballNum = 0;
+                }
+            }
+        }
+    }
+    void animateBallLightning(float Dt) {
+        if (time >= 10000) {
+            time = 0;
+            ballLightningPoints.clear();
+            return;
+        }
+        time += 0.001;
+        static float globalRotationAngle = 0.0f;
+        static float globalColorPhase = 0.0f;
+        const float rotationSpeed = 1.5f;
+        const float colorChangeSpeed = 3.0f;
+        globalRotationAngle += rotationSpeed * Dt;
+        globalColorPhase += colorChangeSpeed * Dt;
+        float colorValue = 0.5f * (sin(globalColorPhase) + 1.0f);
+        vec3 currentColor = mix(vec3(0.4f, 0.5f, 0.8f), vec3(1.0f), colorValue);
+        std::vector<vec2> centers;
+        std::vector<std::vector<Branch*>> rings;
+        for (auto& point : ballLightningPoints) {
+            if (point.depth != -1) continue;
+            vec2 center = (point.start + point.end) * 0.5f;
+            bool found = false;
+            for (size_t i = 0; i < centers.size(); ++i) {
+                if (length(centers[i] - center) < 0.01f) {
+                    rings[i].push_back(&point);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                centers.push_back(center);
+                rings.push_back({ &point });
+            }
+        }
+        float velocity;
+        std::mt19937 gen((unsigned)time);
+        std::uniform_real_distribution<float> velDist(-1.0f, 1.0f);
+        velocity = velDist(gen);
+        for (size_t i = 0; i < centers.size(); ++i) {
+            vec2 center = centers[i];
+            vec2 newCenter = center + velocity * Dt;
+            vec2 movement = newCenter - center;
+            float ca = cos(globalRotationAngle);
+            float sa = sin(globalRotationAngle);
+            for (auto* segment : rings[i]) {
+                vec2 oldStart = segment->start - center;
+                vec2 oldEnd = segment->end - center;
+                vec2 rotatedStart = vec2(
+                    oldStart.x * ca - oldStart.y * sa,
+                    oldStart.x * sa + oldStart.y * ca
+                );
+                vec2 rotatedEnd = vec2(
+                    oldEnd.x * ca - oldEnd.y * sa,
+                    oldEnd.x * sa + oldEnd.y * ca
+                );
+                segment->start = newCenter + rotatedStart;
+                segment->end = newCenter + rotatedEnd;
+            }
+
+            centers[i] = newCenter;
+        }
+        for (auto& b : ballLightningPoints) {
+            if (b.depth == -1) b.voltage += Dt;
+        }
+    }
+    void drawBranch(const Branch& b, GPUProgram& prog) {
+        if (currentAnimationTime - b.birthTime < b.appearTime) return;
+        vec3 baseColor;
+        float v = clamp(b.voltage, 0.0f, 1.0f);
+        vec3 deepBlue = vec3(0.4f, 0.5f, 0.8f);
+        vec3 purple = vec3(0.6f, 0.7f, 0.9f);
+        vec3 lightBlue = vec3(0.9f, 0.95f, 1.0f);
+        float depthFactor = float(b.depth) / 8.0f;
+        if (v > 0.7f) {
+            baseColor = mix(lightBlue, vec3(1.0f), (v - 0.7f) / 0.3f);
+        }
+        else if (v > 0.3f) {
+            baseColor = mix(purple, lightBlue, (v - 0.3f) / 0.4f);
+        }
+        else {
+            baseColor = mix(deepBlue, purple, v / 0.3f);
+        }
+        baseColor = mix(baseColor, deepBlue, depthFactor);
+        glLineWidth(4.0f - b.depth * 0.3f);
+        Geometry<vec2> line;
+        line.Vtx().push_back(b.start);
+        line.Vtx().push_back(b.end);
+        line.updateGPU(); 
+        prog.setUniform(false, "snail");
+        prog.setUniform(mat4(1), "Model");
+        line.Draw(&prog, GL_LINES, baseColor);
+        for (const auto& b : ballLightningPoints) {
+            if (b.depth != -1) continue;
+            float t = b.voltage;
+            vec3 color = mix(vec3(0.4f, 0.5f, 0.8f), vec3(1.0f), t);
+            Geometry<vec2> ball;
+            ball.Vtx().push_back(b.start);
+            ball.Vtx().push_back(b.end);
+            ball.updateGPU();
+            glLineWidth(1.5f);
+            ball.Draw(&prog, GL_LINES, color);
+        }
+        ballLightningPoints.erase(std::remove_if(ballLightningPoints.begin(), ballLightningPoints.end(), [](const Branch& b) { return b.voltage > 5.0f; }), ballLightningPoints.end());
+    }
+};
+class Background {
+private:
+    GPUProgram prog;
+public:
+    void skyDraw() {
+        Geometry<vec2> sky;
+        sky.Vtx().push_back(vec2(-10.0f, groundLevel));
+        sky.Vtx().push_back(vec2(10.0f, groundLevel));
+        sky.Vtx().push_back(vec2(10.0f, 1.0f));
+        sky.Vtx().push_back(vec2(-10.0f, 1.0f));
+        sky.updateGPU();
+        prog.setUniform(false, "snail");
+        prog.setUniform(mat4(1), "Model");
+        sky.Draw(&prog, GL_TRIANGLE_FAN, vec3(0.0f, 0.1f, 0.3f));
+    }
+    void groundDraw() {
+        Geometry<vec2> ground;
+        ground.Vtx().push_back(vec2(-10.0f, -1.0f));
+        ground.Vtx().push_back(vec2(10.0f, -1.0f));
+        ground.Vtx().push_back(vec2(10.0f, groundLevel));
+        ground.Vtx().push_back(vec2(-10.0f, groundLevel));
+        ground.updateGPU();
+        ground.Draw(&prog, GL_TRIANGLE_FAN, vec3(0.2f, 0.6f, 0.3f));
+    }
+    void drawHalfCircle(const vec2& center, float radius, int segments, Geometry<vec2>& geom) {
+        for (int i = 0; i <= segments; ++i) {
+            float angle = M_PI * i / segments;
+            float x = center.x + radius * cos(angle);
+            float y = center.y + radius * sin(angle);
+            geom.Vtx().push_back(vec2(x, y));
+        }
+    }
+    void cloudDraw() {
+        const int segments = 20;
+        const int numClouds = 250;
+        float bigRadius = 0.2f;
+        float smallRadius = 0.15f;
+        Geometry<vec2> baseCloud;
+        drawHalfCircle(vec2(0.0f, 0.3f), bigRadius, segments, baseCloud);
+        drawHalfCircle(vec2(-0.22f, 0.25f), smallRadius, segments, baseCloud);
+        drawHalfCircle(vec2(0.22f, 0.25f), smallRadius, segments, baseCloud);
+        drawHalfCircle(vec2(-0.35f, 0.1f), smallRadius, segments, baseCloud);
+        drawHalfCircle(vec2(0.35f, 0.1f), smallRadius, segments, baseCloud);
+        float leftX = -0.35f - smallRadius;
+        float rightX = 0.35f + smallRadius;
+        float bottomY = 0.1f - smallRadius;
+        baseCloud.Vtx().push_back(vec2(rightX, bottomY));
+        baseCloud.Vtx().push_back(vec2(leftX, bottomY));
+        baseCloud.updateGPU();
+        std::mt19937 gen(420);
+        std::uniform_real_distribution<float> xDist(-10.0f, 10.0f);
+        std::uniform_real_distribution<float> yDist(0.0f, 1.0f);
+        std::uniform_real_distribution<float> scaleDist(0.8f, 1.3f);
+        std::uniform_real_distribution<float> darknessDist(0.2f, 0.6f);
+        float baseBrightness = darknessDist(gen);
+        for (int i = 0; i < numClouds; ++i) {
+            float x = xDist(gen);
+            float y = yDist(gen);
+            float scale = scaleDist(gen);
+            Geometry<vec2> cloudInstance;
+            for (const auto& p : baseCloud.Vtx()) {
+                cloudInstance.Vtx().push_back(vec2(p.x * scale + x, p.y * scale + y));
+            }
+            cloudInstance.updateGPU();
+            float varBrightness = std::min(1.0f, std::max(0.3f, baseBrightness + (darknessDist(gen) - 0.5f) * 0.2f));
+            vec3 varColor = vec3(varBrightness, varBrightness, varBrightness + 0.1f);
+            cloudInstance.Draw(&prog, GL_TRIANGLE_FAN, varColor);
+        }
+    }
+    void draw(GPUProgram& program) {
+        prog = program;
+        skyDraw();
+        groundDraw();
+        cloudDraw();
+    }
+    std::vector<vec2> convexHull(std::vector<vec2> points) {
+        if (points.size() <= 3) return points;
+        std::sort(points.begin(), points.end(), [](const vec2& a, const vec2& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+        std::vector<vec2> hull;
+        for (const auto& p : points) {
+            while (hull.size() >= 2 && cross(hull[hull.size() - 2], hull.back(), p) <= 0) {
+                hull.pop_back();
+            }
+            hull.push_back(p);
+        }
+        size_t lowerSize = hull.size();
+        for (auto it = points.rbegin(); it != points.rend(); ++it) {
+            while (hull.size() > lowerSize && cross(hull[hull.size() - 2], hull.back(), *it) <= 0) {
+                hull.pop_back();
+            }
+            hull.push_back(*it);
+        }
+        hull.pop_back();
+        return hull;
+    }
+    float cross(const vec2& o, const vec2& a, const vec2& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    }
+};
+class Snail {
+private:
+    vec2 position;
+    float speed;
+    float time;
+    bool isMoving;
+    std::vector<vec2> shellVertices;
+    std::vector<vec2> bodyVertices;
+    std::vector<vec2> hornsVertices;
+    float shellSize;
+    float bodyLength;
+public:
+    Snail() : position(-10.0f, groundLevel - 0.05f), speed(0.1f), time(0.0f),
+        isMoving(true), shellSize(0.15f), bodyLength(0.3f) {
+        generateFibonacciSpiral();
+        generateEllipticalBody();
+        generateEyes();
+    }
+    void generateFibonacciSpiral() {
+        shellVertices.clear();
+        const int points = 1000;
+        const float angleStep = 0.4f;
+        const float a = 0.97f;
+        const float startRadius = 3.0f;
+        float r = startRadius;
+        vec2 center = position + vec2(9.0f, 2.8f);
+        for (int i = 0; i < points; ++i) {
+            float theta = (i - 1.6) * angleStep;
+            vec2 mainPoint = vec2(r * cos(theta), r * sin(theta));
+            shellVertices.push_back(center + mainPoint);
+            r *= a;
+        }
+        for (auto& v : shellVertices) {
+            v *= shellSize / 2.5f;
+        }
+    }
+    void generateEllipticalBody() {
+        bodyVertices.clear();
+        const int segments = 20;
+        const float width = bodyLength * 0.5f;
+        const float height = bodyLength * 0.1f;
+        for (int i = 0; i <= segments; i++) {
+            float t = 2.0f * (float) M_PI * i / segments;
+            bodyVertices.push_back(vec2(width * cos(t), height * sin(t)));
+        }
+    }
+    void generateEyes() {
+        hornsVertices.clear();
+        const float hornLength = shellSize * 0.7f;
+        const float hornBaseWidth = shellSize * 0.05f;
+        vec2 hornBaseLeft(shellSize * 1.2f, shellSize * 0.1f);
+        vec2 hornTipLeft = hornBaseLeft + vec2(0.2f, hornLength);
+        vec2 hornBaseRight(shellSize * 1.0f, shellSize * 0.2f);
+        vec2 hornTipRight = hornBaseRight + vec2(0.2f, hornLength);
+        hornsVertices.push_back(hornBaseLeft);
+        hornsVertices.push_back(hornTipLeft);
+        hornsVertices.push_back(hornBaseRight);
+        hornsVertices.push_back(hornTipRight);
+    }
+    void animate(float deltaTime) {
+        if (!isMoving) return;
+        time += deltaTime;
+        position.x += speed * deltaTime;
+        if (position.x > 10.0f) {
+            position.x = -10.0f;
+        }
+        else if (position.x < -10.0f) {
+            position.x = 10.0f;
+        }
+    }
+    void stop() {
+        isMoving = false;
+    }
+    void start() {
+        isMoving = true;
+    }
+    void draw(GPUProgram& prog, Camera* camera) {
+        if (bodyVertices.empty() || shellVertices.empty() || hornsVertices.empty()) {
+            return;
+        }
+        mat4 snailModelMatrix = translate(vec3(position.x, position.y, 0.0f)) * scale(vec3(zoom, zoom, 1));
+        prog.setUniform(snailModelMatrix, "SnailModel");
+        prog.setUniform(true, "snail");
+        Geometry<vec2> bodyGeo;
+        for (auto& v : bodyVertices) {
+            bodyGeo.Vtx().push_back(v + vec2(shellSize * 0.5f, 0)); 
+        }
+        bodyGeo.updateGPU();
+        bodyGeo.Draw(&prog, GL_TRIANGLE_FAN, vec3(0.7f, 0.6f, 0.5f));
+        Geometry<vec2> shellGeo;
+        for (auto& v : shellVertices) {
+            shellGeo.Vtx().push_back(v);
+        }
+        shellGeo.updateGPU();
+        shellGeo.Draw(&prog, GL_TRIANGLE_FAN, vec3(0.9f, 0.8f, 0.7f));
+        shellGeo.Draw(&prog, GL_LINE_STRIP, vec3(0.0f, 0.0f, 0.0f));
+        Geometry<vec2> hornsGeo;
+        hornsGeo.Vtx().push_back(hornsVertices[0]);
+        hornsGeo.Vtx().push_back(hornsVertices[1]);
+        hornsGeo.Vtx().push_back(hornsVertices[2]);
+        hornsGeo.Vtx().push_back(hornsVertices[3]);
+        glLineWidth(3.0f);
+        hornsGeo.updateGPU();
+        hornsGeo.Draw(&prog, GL_LINES, vec3(0.6f, 0.5f, 0.4f));
+        Geometry<vec2> eyesGeo;
+        eyesGeo.Vtx().push_back(hornsVertices[1]);
+        eyesGeo.Vtx().push_back(hornsVertices[3]);
+        eyesGeo.updateGPU();
+        glPointSize(8.0f);
+        eyesGeo.updateGPU();
+        eyesGeo.Draw(&prog, GL_POINTS, vec3(0.6f, 0.5f, 0.4f));
+        glPointSize(3.0f);
+        eyesGeo.updateGPU();
+        eyesGeo.Draw(&prog, GL_POINTS, vec3(0.2f, 0.4f, 0.8f));
+        glPointSize(1.0f);
+        prog.setUniform(false, "snail");
+    }
+    vec2 getPosition() const { return position; }
+    float getShellSize() const { return shellSize; }
+    mat4 getModelMatrix() const {
+        return translate(vec3(position.x, position.y, 0.0f)) * scale(vec3(zoom, zoom, 1));;
+    }
+};
+class Fire {
+private:
+    bool isFire = false;
+    bool isButter = false;
+    Snail* snail;
+    std::mt19937 rng;
+    float flameTime = 0.0f;
+    vec2 butterPos;
+    float butterSize = 0.05f;
+    std::vector<vec2> flameBasePoints;
+    std::vector<float> flameHeights;
+    std::vector<float> flameWidths;
+public:
+    Fire(Snail* s)
+        : snail(s), rng(std::random_device{}()) {
+        initFire();
+        reButter();
+    }
+    void reButter() {
+        std::mt19937 gen((unsigned)time(NULL));
+        std::uniform_real_distribution<float> xDist(-9.8f, 9.8f);
+        butterPos = vec2(xDist(gen), groundLevel - 0.05f);
+    }
+    void adddButter(vec3 pos) {
+        butterPos = pos;
+    }
+    void checkHit(const std::vector<Branch>& branches, GPUProgram prog) {
+        if (branches.empty()) return;
+        float halfSize = butterSize / 2.0f;
+        if (isFire && snail->getPosition().x + 0.2f> butterPos.x - halfSize && snail->getPosition().x < butterPos.x + halfSize && snail->getPosition().y > butterPos.y - halfSize && snail->getPosition().y < butterPos.y + halfSize) {
+            isButter = true;
+            isFire = false;
+            reButter();
+            return;
+        }
+        if (snail->getPosition().x + 0.2f > butterPos.x - halfSize && snail->getPosition().x < butterPos.x + halfSize && snail->getPosition().y > butterPos.y - halfSize && snail->getPosition().y < butterPos.y + halfSize) {
+            isButter = true;
+            reButter();
+            return;
+        }
+        for (const auto& b : branches) {
+            float dist = pointLineSegmentDistance(snail->getPosition(), b.start, b.end);
+            if (doesLightningTouchSquare(b, prog) || dist < 0.03f) {
+                if (isButter) {
+                    isFire = false;
+                    isButter = false;
+                    return;
+                }else{
+                    isFire = true;
+                    return;
+                }
+            }
+        }
+    }
+    bool doesLightningTouchSquare(const Branch& b, GPUProgram prog) {
+        float left = snail->getPosition().x - 0.2f;
+        float right = snail->getPosition().x + 0.4f;
+        float bottom = snail->getPosition().y - 0.05f;
+        float top = snail->getPosition().y + 0.3f;
+        vec2 a = b.start;
+        vec2 b_ = b.end;
+        if ((a.x < left && b_.x < left) || (a.x > right && b_.x > right) ||
+            (a.y < bottom && b_.y < bottom) || (a.y > top && b_.y > top))
+            return false;
+        return true;
+    }
+    static float pointLineSegmentDistance(const vec2& p, const vec2& v, const vec2& w) {
+        float l2 = length(v - w);
+        if (l2 == 0.0) return length(p - v);
+        float t = dot(p - v, w - v) / l2;
+        t = std::fmax(0.0f, std::fmin(1.0f, t));
+        vec2 projection = v + t * (w - v);
+        return length(p - projection);
+    }
+    void initFire() {
+        const int flameCount = 15;
+        const float baseWidth = 0.25f;
+        flameBasePoints.clear();
+        flameHeights.clear();
+        flameWidths.clear();
+        for (int i = 0; i < flameCount; i++) {
+            float xPos = (-baseWidth / 2 + (baseWidth * i) / (flameCount - 1))-0.04f;
+            flameBasePoints.push_back(vec2(xPos, 0.1f));
+            flameHeights.push_back(0.3f + 0.1f * (rand() / (float)RAND_MAX));
+            flameWidths.push_back(0.05f + 0.03f * (rand() / (float)RAND_MAX));
+        }
+    }
+    void animate(float dt) {
+        if (!isFire) return;
+        flameTime += dt * 2.0f;
+        for (size_t i = 0; i < flameBasePoints.size(); i++) {
+            float heightVariation = 0.1f * sin(flameTime * 3.0f + i * 0.5f);
+            flameHeights[i] = 0.3f + heightVariation;
+            float widthVariation = 0.02f * sin(flameTime * 2.0f + i * 0.3f);
+            flameWidths[i] = 0.05f + widthVariation;
+        }
+    }
+    void draw(GPUProgram& prog, const mat4& VP, const mat4& snailModel) {
+        Geometry<vec2> butterGeom;
+        prog = prog;
+        float halfSize = butterSize / 2.0f;
+        butterGeom.Vtx().push_back(butterPos + vec2(-halfSize, -halfSize));
+        butterGeom.Vtx().push_back(butterPos + vec2(halfSize, -halfSize));
+        butterGeom.Vtx().push_back(butterPos + vec2(halfSize, halfSize));
+        butterGeom.Vtx().push_back(butterPos + vec2(-halfSize, halfSize));
+        butterGeom.updateGPU();
+        prog.setUniform(false, "snail");
+        prog.setUniform(mat4(1), "Model");
+        butterGeom.Draw(&prog, GL_TRIANGLE_FAN, vec3(1.0f, 1.0f, 0.0f));
+        if (!isFire) return;
+        if (flameBasePoints.empty() || flameHeights.empty() || flameWidths.empty()) return;
+        size_t pointCount = std::min({ flameBasePoints.size(), flameHeights.size(), flameWidths.size() });
+        Geometry<vec2> fireGeometry;
+        mat4 snailModelMatrix = translate(vec3(snail->getPosition().x, snail->getPosition().y, 0.0f)) * scale(vec3(zoom, zoom, 1));
+        prog.setUniform(snailModelMatrix, "SnailModel");
+        prog.setUniform(true, "snail");
+        for (size_t i = 0; i < pointCount; i++) {
+            vec2 base = flameBasePoints[i];
+            float height = flameHeights[i];
+            float width = flameWidths[i];
+            float timeOffset = flameTime + i * 0.2f;
+            float sway = 0.03f * sin(timeOffset * 4.0f);
+            vec2 bottomLeft = base + vec2(-width / 2 + sway, 0.0f);
+            vec2 top = base + vec2(sway * 1.5f, height);
+            vec2 bottomRight = base + vec2(width / 2 + sway, 0.0f);
+            fireGeometry.Vtx().push_back(bottomLeft);
+            fireGeometry.Vtx().push_back(top);
+            fireGeometry.Vtx().push_back(bottomRight);
+        }
+        vec3 fireColor1(1.0f, 0.4f, 0.1f);
+        vec3 fireColor2(1.0f, 0.8f, 0.2f);
+        fireGeometry.updateGPU();
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        for (int i = 0; i < pointCount; i++) {
+            int idx = i * 3;
+            Geometry<vec2> singleFlame;
+            singleFlame.Vtx().push_back(fireGeometry.Vtx()[idx]);
+            singleFlame.Vtx().push_back(fireGeometry.Vtx()[idx + 1]);
+            singleFlame.Vtx().push_back(fireGeometry.Vtx()[idx + 2]);
+            singleFlame.updateGPU();
+            prog.setUniform(fireColor1, "color");
+            singleFlame.Draw(&prog, GL_TRIANGLES, fireColor1);
+            prog.setUniform(fireColor2, "color");
+            singleFlame.Draw(&prog, GL_TRIANGLES, fireColor2);
+        }
+        glDisable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ZERO);
+        prog.setUniform(false, "snail");
+    }
+    bool getIsFire() const { return isFire; }
+};
+class MyApp : public glApp {
+private:
+    Camera* camera;
+    GPUProgram* program;
+    Flash* flash;
+    Background background;
+    bool firstClick = true;
+    Snail* snail;
+    Fire* fire;
+    float lastTime = 0.0f;
+    bool gosnail = true;
+public:
+    MyApp() : glApp("Fraktal Villam Generator") {}
+    void onInitialization() override {
+        program = new GPUProgram(vertSource, fragSource);
+        camera = new Camera();
+        flash = new Flash();
+        snail = new Snail();
+        fire = new Fire(snail);
+    }
+    void onDisplay() override {
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        program->Use();
+        program->setUniform(camera->getVPMatrix(), "VP");
+        background.draw(*program);
+        snail->draw(*program, camera);
+        for (const auto& b : branches) flash->drawBranch(b, *program);
+        fire->draw(*program, camera->getVPMatrix(), snail->getModelMatrix());
+    }
+    void onTimeElapsed(float startTime, float endTime) {
+        float dt = 0.01f;
+        for (float t = startTime; t < endTime; t += dt) {
+            float Dt = fmin(dt, endTime - t) * 2;
+            if (gosnail) {
+                snail->animate(Dt);
+            }
+            fire->checkHit(branches, *program);
+            fire->animate(Dt);
+            flash->animateBallLightning(Dt);
+            flash->animate(Dt);
+        }
+        refreshScreen();
+    }
+    void onKeyboard(int key) override {
+        if (key == 'x') {
+            branches.clear();
+            for (int i = 0; i < 20; i++) {
+                vec2 pos(-10 + i, 0.8f);
+                vec2 initialDir(normalize(vec2(0.0f, 0.0f) - pos));
+                flash->generateFractalLightning(pos, initialDir, 0.0f, 1.0f, 0.5f);
+            }
+        }
+        if (key == 'g') {
+            branches.clear();
+            flash->generateFractalLightning(vec2(0, 0.7f), normalize(vec2(0.0f, 0.0f) - vec2(0, 0.7)), 0, 1.0f, 0.5f);
+            flash->generateFractalLightning(vec2(0, -0.7), normalize(vec2(0.0f, 0.0f) - vec2(0, -0.7)), 0, 1.0f, 0.5f);
+            flash->isBallLightning();
+        }
+        if (key == '+') zoom *= 1.1f;
+        if (key == '-') zoom /= 1.1f;
+        if (key == 'a') camera->moveLeft();
+        if (key == 'd') camera->moveRight();
+        if (key == 'w') camera->moveUp();
+        if (key == 's') camera->moveDown();
+        if (key == 'k') {
+            snail->start();
+            gosnail = true;
+        }
+        if (key == 'l') {
+            snail->stop();
+            gosnail = false;
+        }
+        camera->setZoom(zoom);
+        refreshScreen();
+    };
+    void onMousePressed(MouseButton but, int pX, int pY) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<float> voltageDist(0.3f, 1.0f);
+        float voltage = voltageDist(gen);
+        vec3 worldPos = camera->screenToWorld(vec3(pX, pY, 0.0f));
+        float t = -camera->getEye().z / (worldPos.z - camera->getEye().z);
+        vec3 posOnPlane = camera->getEye() + t * (worldPos - camera->getEye());
+        if (but == MOUSE_LEFT) {
+            if (firstClick) {
+                branches.clear();
+                firstClick = false;
+            }
+            else {
+                firstClick = true;
+            }
+            if (posOnPlane.y < groundLevel + 0.35f) {
+                vec2 dir = normalize(vec2(0.0f, 1.0f));
+                flash->generateFractalLightning(posOnPlane, dir, 0, voltage, 0.5f);
+            }
+            else {
+                vec2 dir = normalize(vec2(0.0f, -1.0f));
+                flash->generateFractalLightning(posOnPlane, dir, 0, voltage, 0.3f);
+            }
+            flash->isBallLightning();
+        }
+        if (but == MOUSE_RIGHT) {
+            fire->adddButter(posOnPlane);
+        }
+        refreshScreen();
+    }
+}; MyApp app;

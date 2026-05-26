@@ -1,0 +1,377 @@
+#include "framework.h"
+#include <iostream>
+
+const char* vertSource = R"(
+    #version 330
+    precision highp float;
+
+	layout(location = 0) in vec2 cP;	// 0. bemeneti regiszter
+
+	void main() {
+		gl_Position = vec4(cP.x, cP.y, 0, 1); 	// bemenet m r normaliz lt eszk zkoordin t kban
+	}
+)";
+
+const char* fragSource = R"(
+    #version 330
+    precision highp float;
+
+	uniform vec3 color;			// konstans sz n
+	out vec4 fragmentColor;		// pixel sz n
+
+	void main() {
+		fragmentColor = vec4(color, 1); // RGB -> RGBA
+	}
+)";
+
+const int winWidth = 600, winHeight = 600;
+
+enum class State { None, AddPoint, AddLine, MoveLine, IntersectLines };
+
+class Object {
+public:
+	Geometry<vec3>* point;
+
+	Object(float x, float y) {
+		point = new Geometry<vec3>;
+		point->Vtx() = { vec3(x, y, 1.0f) };
+		point->updateGPU();
+		printf("pont %.1f, %.1f added\n", x, y);
+	}
+	void draw(GPUProgram* gpuProgram) {
+		glPointSize(10.0f);
+		point->Draw(gpuProgram, GL_POINTS, vec3(1.0f, 0.0f, 0.0f));
+	}
+};
+class PointCollection {
+private:
+	Geometry<vec3>* Points;
+	GLuint vao, vbo;
+
+public:
+	PointCollection() {
+		Points = new Geometry<vec3>;
+		glGenVertexArrays(1, &vao);
+		glGenBuffers(1, &vbo);
+	}
+	void addPoint(const vec3& p) {
+		Points->Vtx().push_back(p);
+		Points->updateGPU();
+		printf("Point %.2f, %.2f added\n", p.x, p.y);
+	}
+	vec3* search(const vec3& p) const {
+		vec3* nearpoint = nullptr;
+		for (auto& s : Points->Vtx()) {
+			float dist = (s.x - p.x) * (s.x - p.x) + (s.y - p.y) * (s.y - p.y);
+			if (dist < 0.1f) {
+				nearpoint = &s;
+			}
+		}
+		return nearpoint;
+	}
+	void update() const {
+		Points->updateGPU();
+	}
+	void draw(GPUProgram* gpuProgram, float r, float g, float b) const {
+		glPointSize(10.0f);
+		glBindVertexArray(vao);
+		Points->Draw(gpuProgram, GL_POINTS, vec3(r, g, b));
+	}
+};
+class Line {
+private:
+	vec4 a, b;
+	vec4 vektor;
+	float c, d, e;
+public:
+	Line(const vec3& v1, const vec3& v2) {
+		a = vec4(v1.x, v1.y, 0, 1);
+		b = vec4(v2.x, v2.y, 0, 1);
+		vektor = vec4(b.x - a.y, a.y - b.x, 0, 1);
+		computeImplicitEquation();
+	}
+	Line(const vec4& v1, const vec4& v2) {
+		a = v1;
+		b = v2;
+		vektor = vec4(b.x - a.y, a.y - b.x, 0, 1);
+		computeImplicitEquation();
+	}
+	vec4 getA() { return a; }
+	vec4 getB() { return b; }
+	vec4 getVektor() const { return vektor; }
+	float getC() { return c; }
+	float getD() { return d; }
+	float getE() { return e; }
+	void computeImplicitEquation() {
+		vektor = b - a;
+		c = vektor.y;
+		d = -vektor.x;
+		e = b.x * a.y - a.x * b.y;
+	}
+	bool intersection(const Line& l2, vec3& p) {
+		float det = c * l2.d - l2.c * d;
+		if (fabs(det) < 1e-5) return false;
+		float x = (d * l2.e - l2.d * e) / det;
+		float y = (l2.c * e - c * l2.e) / det;
+		if (x > 1.0f || x < -1.0f) return false;
+		if (y > 1.0f || y < -1.0f) return false;
+		p = vec3(x, y, 1);
+		return true;
+	}
+	bool isPointNearLine(const vec3& point) const {
+		float distance = fabs(c * point.x + d * point.y + e) / sqrt(c * c + d * d);
+		return distance < 0.1f;
+	}
+	void clipToBoundingBox() {
+		if (a.x == a.y && b.x == b.y) {
+			a = vec4(1, -1, 1, 1);
+			b = vec4(-1, 1, 1, 1);
+			return;
+		}
+		if (a.x == -b.x && a.y == -b.y) {
+			a = vec4(1, 1, 1, 1);
+			b = vec4(-1, -1, 1, 1);
+			return;
+		}
+		vec3 tmp(1, 1, 1);
+		bool first = true, sec = false;
+		Line line1(vec3(1, 1, 1), vec3(-1, 1, 1));
+		Line line2(vec3(1, 1, 1), vec3(1, -1, 1));
+		Line line3(vec3(1, -1, 1), vec3(-1, -1, 1));
+		Line line4(vec3(-1, 1, 1), vec3(-1, -1, 1));
+		if (intersection(line1, tmp)) {
+			if (first) {
+				b = vec4(tmp.x, tmp.y, tmp.z, 1);
+				first = false;
+				sec = true;
+			}
+		}
+		if (intersection(line2, tmp)) {
+			if (first) {
+				b = vec4(tmp.x, tmp.y, tmp.z, 1);
+				first = false;
+				sec = true;
+			}
+			else if (sec) {
+				a = vec4(tmp.x, tmp.y, tmp.z, 1);
+				sec = false;
+			}
+		}
+		if (intersection(line3, tmp)) {
+			if (first) {
+				b = vec4(tmp.x, tmp.y, tmp.z, 1);
+				first = false;
+				sec = true;
+			}
+			else if (sec) {
+				a = vec4(tmp.x, tmp.y, tmp.z, 1);
+				sec = false;
+			}
+		}
+		if (intersection(line4, tmp)) {
+			if (first) {
+				b = vec4(tmp.x, tmp.y, tmp.z, 1);
+				first = false;
+				sec = true;
+			}
+			else if (sec) {
+				a = vec4(tmp.x, tmp.y, tmp.z, 1);
+				sec = false;
+			}
+		}
+		computeImplicitEquation();
+		/*float extend = 2.0f;
+		a = vec4(a.x - extend, a.y - extend * (b.y - a.y) / (b.x - a.x), 0, 1);
+		b = vec4(b.x + extend, b.y + extend * (a.y - b.y) / (a.x - b.x), 0, 1);*/
+	}
+	void translateToPoint(const vec4& newPoint) {
+		vec4 direction = vec4(b.x - a.x, b.y - a.y, 0, 0);
+		a = newPoint;
+		b = newPoint + direction;
+		a.w = 1;
+		b.w = 1;
+		computeImplicitEquation();
+	}
+	void draw(GPUProgram* gpuProgram) {
+		clipToBoundingBox();
+		std::vector<vec4> vertices = { a, b};
+		Geometry<vec4>* geometry = new Geometry<vec4>;
+		geometry->Vtx() = vertices;
+		geometry->updateGPU();
+		glLineWidth(3.0f);
+		geometry->Draw(gpuProgram, GL_LINES, vec3(0.0f, 1.0f, 1.0f));
+	}
+};
+
+class LineCollection {
+private:
+	Geometry<Line>* lines;
+	Geometry<vec4>* gpuData;
+	GLuint vao, vbo;
+	GPUProgram* gpuProgram;
+public:
+	LineCollection(GPUProgram* gpuProg) : gpuProgram(gpuProg) {}
+	LineCollection() {
+		lines = new Geometry<Line>;
+		gpuData = new Geometry<vec4>;
+		glGenVertexArrays(1, &vao);
+		glGenBuffers(1, &vbo);
+	}
+	void update() {
+		lines->updateGPU();
+		gpuData->Vtx().clear();
+		for (Line& line : lines->Vtx()) {
+			gpuData->Vtx().push_back(line.getA());
+			gpuData->Vtx().push_back(line.getB());
+		}
+		gpuData->updateGPU();
+	}
+	void addLine(const vec4& v1, const vec4& v2) {
+		if (v1.x == v2.x && v1.y == v2.y) return;
+		Line newLine(v1, v2);
+		lines->Vtx().push_back(newLine);
+		lines->updateGPU();
+		printf("Line added\n");
+		printf("\tImplicit: %.1f x + %.1f y + %.1f = 0\n", newLine.getC(), newLine.getD(), newLine.getE());
+		printf("\tParametric: r<t> = <%.1f, %.1f> + <%.1f, %.1f>t\n", newLine.getA().x, newLine.getA().y, newLine.getB().x - newLine.getA().x, newLine.getB().y - newLine.getA().y);
+		update();
+	}
+	Line* NearLine(const vec3& point) {
+		Line* tmp = nullptr;
+		vec3 p(point.x, point.y, point.z);
+		for (Line& line : lines->Vtx()) {
+			if (line.isPointNearLine(p)) {
+				tmp = &line;
+			}
+		}
+		return tmp;
+	}
+	void draw(GPUProgram* gpuProgram) {
+		for (auto& line : lines->Vtx()) {
+			line.draw(gpuProgram);
+		}
+	}
+};
+class MyApp : public glApp {
+	GPUProgram* gpuProgram;
+	PointCollection* pC;
+	vec3 picked;
+	State keys;
+	LineCollection* lines;
+	Line* selectedLine;
+	vec3 tempPoint;
+	bool first = true;
+	bool isMove = false;
+public:
+	MyApp() : glApp("HF_1") {}
+	vec3 PixelToNDC(int pX, int pY) {
+		return vec3(2.0f * pX / winWidth - 1, 1.0f - 2.0f * pY / winHeight, 1);
+	}
+	void onInitialization() {
+		gpuProgram = new GPUProgram(vertSource, fragSource);
+		pC = new PointCollection();
+		lines = new LineCollection();
+		/*pC->addPoint(vec4(-0.8f, -0.8f, 1, 1));
+		pC->addPoint(vec4(0.8f, 0.8f, 1, 1));
+		pC->addPoint(vec4(0.8f, -0.8f, 1, 1));
+		pC->addPoint(vec4(-0.8f, 0.8f, 1, 1));
+		pC->addPoint(vec4(0, 0, 1, 1));
+		lines->addLine(vec4(0.8f, 0.8f, 1, 1), vec4(-0.8f, -0.8f, 1, 1));
+		lines->addLine(vec4(0.8f, -0.8f, 1, 1), vec4(-0.8f, 0.8f, 1, 1));
+		lines->addLine(vec4(-0.8f, -0.8f, 1, 1), vec4(0.8f, -0.8f, 1, 1));
+		lines->addLine(vec4(-0.8f, 0.8f, 1, 1), vec4(0.8f, 0.8f, 1, 1));
+		lines->addLine(vec4(0.8f, 0.8f, 1, 1), vec4(0.8f, -0.8f, 1, 1));
+		lines->addLine(vec4(-0.8f, 0.8f, 1, 1), vec4(-0.8f, -0.8f, 1, 1));
+		lines->addLine(vec4(0.5f, 0.0f, 1, 1), vec4(0.0f, 0.5f, 1, 1));
+		lines->addLine(vec4(-0.5f, 0.0f, 1, 1), vec4(0.0f, -0.5f, 1, 1));
+		lines->addLine(vec4(0.5f, 0.3f, 1, 1), vec4(0.2f, 0.0f, 1, 1));
+		lines->addLine(vec4(0.3f, 0.5f, 1, 1), vec4(-0.2f, 0.0f, 1, 1));*/
+	}
+	void onDisplay() {
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT);
+		lines->draw(gpuProgram);
+		pC->draw(gpuProgram, 1.0f, 0.0f, 0.0f);
+	}
+
+	void onMousePressed(MouseButton button, int pX, int pY) {
+		tempPoint = vec3(PixelToNDC(pX, pY));
+		if (/*button == MOUSE_RIGHT && */keys == State::AddPoint) {
+			pC->addPoint(tempPoint);
+			refreshScreen();
+		}
+		else if (/*button == MOUSE_LEFT  && */keys == State::AddLine) {
+			vec3* nearestPoint = pC->search(tempPoint);
+			if (first) {
+				picked = *nearestPoint;
+				first = false;
+			}
+			else {
+				lines->addLine(vec4(picked.x, picked.y, picked.z, 1), vec4(nearestPoint->x, nearestPoint->y, nearestPoint->z, 1));
+				first = true;
+				lines->update();
+				refreshScreen();
+			}
+		}
+		else if (/*button == MOUSE_LEFT && */ keys == State::MoveLine) {
+			selectedLine = new Line(vec4(0, 0, 1, 1), vec4(1, 1, 1, 1));
+			selectedLine = lines->NearLine(vec3(tempPoint.x, tempPoint.y, tempPoint.z));
+			if (!selectedLine) return;
+			isMove = true;
+			printf("Move\n");
+		}
+		else if (/*button == MOUSE_LEFT && */keys == State::IntersectLines) {
+			if (first) {
+				selectedLine = new Line(vec4(0, 0, 1, 1), vec4(1, 1, 1, 1));
+				selectedLine = lines->NearLine(vec3(tempPoint.x, tempPoint.y, tempPoint.z));
+				if (!selectedLine) return;
+				first = false;
+			}
+			else {
+				Line* selectedSecondLine = lines->NearLine(vec3(tempPoint.x, tempPoint.y, tempPoint.z));
+				if (selectedSecondLine) {
+					vec3 k = vec3(tempPoint.x, tempPoint.y, 1);
+					if (selectedLine->intersection(*selectedSecondLine, k)) {
+						printf("Intersect\n");
+						pC->addPoint(k);
+						pC->update();
+						refreshScreen();
+					}
+				}
+				first = true;
+			}
+		}
+	}
+	void onMouseMotion(int pX, int pY) {
+		if (keys == State::MoveLine && isMove) {
+			vec3 move = vec3(PixelToNDC(pX, pY));
+			selectedLine->translateToPoint(vec4(move.x, move.y, 1, 1));
+			lines->update();
+		}
+		refreshScreen();
+	}
+	void onMouseReleased(MouseButton button, int pX, int pY) {
+		if (keys == State::MoveLine && isMove) {
+			isMove = false;
+			selectedLine = nullptr;
+			lines->update();
+		}
+		refreshScreen();
+	}
+	void onKeyboard(int key) {
+		switch (key) {
+		case 'p':
+			keys = State::AddPoint;
+			break;
+		case 'l':
+			keys = State::AddLine;
+			break;
+		case 'm': keys = State::MoveLine; break;
+		case 'i': keys = State::IntersectLines; break;
+		default: keys = State::None; break;
+		}
+		refreshScreen();
+	}
+};
+
+MyApp app;
