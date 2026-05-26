@@ -1,0 +1,15 @@
+﻿  HF_1.cpp
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\framework.h(282,22): warning C4018: '<': signed/unsigned mismatch
+  (compiling source file 'HF_1.cpp')
+  
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\framework.h(283,23): warning C4018: '<': signed/unsigned mismatch
+  (compiling source file 'HF_1.cpp')
+  
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\framework.h(288,44): warning C4244: '=': conversion from 'float' to 'unsigned char', possible loss of data
+  (compiling source file 'HF_1.cpp')
+  
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\HF_1\HF_1.cpp(158,25): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\HF_1\HF_1.cpp(167,25): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\HF_1\HF_1.cpp(178,26): warning C4244: '+=': conversion from 'double' to 'float', possible loss of data
+C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\sources\HF_1\HF_1.cpp(179,37): warning C4305: '-=': truncation from 'double' to 'float'
+  HF_1.vcxproj -> C:\BME\4_felev\grafika\HF_1\GrafikaLaborCsomag\glProgram\x64\Debug\HF_1.exe

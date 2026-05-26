@@ -1,0 +1,17 @@
+﻿  framework.cpp
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(282,22): warning C4018: '<': signed/unsigned mismatch
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(283,23): warning C4018: '<': signed/unsigned mismatch
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(288,44): warning C4244: '=': conversion from 'float' to 'unsigned char', possible loss of data
+  GreenTriangle.cpp
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(282,22): warning C4018: '<': signed/unsigned mismatch
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(283,23): warning C4018: '<': signed/unsigned mismatch
+D:\3DProjects\GrafikaLaborCsomag\glProgram\sources\framework.h(288,44): warning C4244: '=': conversion from 'float' to 'unsigned char', possible loss of data
+  glad.c
+  Generating code
+  199 of 206 functions (96.6%) were compiled, the rest were copied from previous compilation.
+    1 functions were new in current compilation
+    1 functions had inline decision re-evaluated but remain unchanged
+  Finished generating code
+  GreenTriangle.vcxproj -> D:\3DProjects\GrafikaLaborCsomag\glProgram\x64\Release\GreenTriangle.exe
+  'pwsh.exe' is not recognized as an internal or external command,
+  operable program or batch file.
