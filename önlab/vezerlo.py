@@ -10,8 +10,8 @@ from power_source import PowerSupply
 
 
 # --- MÉRÉSI PARAMÉTEREK ---
+#TAP_ADDRESS = 'tcp://169.254.35.236:1026'
 IDQ_ADDRESS = 'tcp://172.26.34.114:5555'
-TAP_ADDRESS = 'tcp://169.254.35.236:1026'
 TAP_ADDRESSUSB = "ASRL5::INSTR"
 BAUD_RATE = 115200
 
@@ -29,7 +29,6 @@ class ZMQInstrument:
 
     def test_connection(self):
         """Teszteli a kapcsolatot egy egyszerű query paranccsal."""
-        # return True, "Kapcsolat létrehozva, tesztelés megkezdése..."
         try:
             self._sock.send_string("*IDN?")
             response = self._sock.recv_string()
@@ -75,7 +74,6 @@ class MeasurementController:
         on_error=None,
     ):
         self.idq_address = idq_address
-        # store the address (can be a ZMQ address or a VISA/ASRL USB address)
         self.tap_address = tap_address
         self.baud_rate = BAUD_RATE
         self.output_dir = output_dir
@@ -122,30 +120,21 @@ class MeasurementController:
         eredeti = {}
         for ch in channels:
             voltage = None
-            current = None
             try:
                 voltage = float(tapegyseg.query(f':SOURce{ch}:VOLTage?').strip())
             except Exception:
                 pass
-            try:
-                current = float(tapegyseg.query(f':SOURce{ch}:CURRent?').strip())
-            except Exception:
-                pass
-            eredeti[ch] = {'voltage': voltage, 'current': current}
+            eredeti[ch] = {'voltage': voltage}
         return eredeti
 
-    def write_step_header(self, file_handle, feszultseg, csillapitas, current=None):
-        if current is None:
-            header = f"\nfeszültség: {feszultseg} V; csillapítás: {csillapitas} dB:\n"
-        else:
-            header = f"\nfeszültség: {feszultseg} V; áramerősség: {current} A; csillapítás: {csillapitas} dB:\n"
+    def write_step_header(self, file_handle, feszultseg, csillapitas):
+        header = f"\nfeszültség: {feszultseg} V; csillapítás: {csillapitas} dB:\n"
         file_handle.write(header)
         file_handle.flush()
 
     def format_step_label(self, channel, step):
         return (
-            f"Ch{channel}: feszültség: {step['fesz']} V; "
-            f"áramerősség: {step['aram']} A; csillapítás: {step['db']} dB"
+            f"Ch{channel}: feszültség: {step['fesz']} V; csillapítás: {step['db']} dB"
         )
 
     def get_channel_step(self, channel, step_index):
@@ -176,13 +165,11 @@ class MeasurementController:
         all_file_handle.flush()
 
         for ch, step in step_map.items():
-            self.write_step_header(channel_file_handles[ch], step['fesz'], step['db'], step.get('aram'))
+            self.write_step_header(channel_file_handles[ch], step['fesz'], step['db'])
 
     def apply_step_to_tap(self, tap, step_map):
         for ch, step in step_map.items():
-            tap.write(f':SOURce{ch}:VOLTage {step["fesz"]}')
-            if step.get('aram') is not None:
-                tap.write(f':SOURce{ch}:CURRent {step["aram"]}')
+            tap.ps.write(f':SOURce{ch}:VOLTage {step["fesz"]}')
 
     def write_measurement_samples(self, t_c, selected_channels, all_file_handle, channel_file_handles):
         csatorna_szamlalok = self.sample_channels(t_c, selected_channels)
@@ -210,22 +197,32 @@ class MeasurementController:
             csatorna_szamlalok[ch] = n
         return csatorna_szamlalok
 
-    def restore_tap_outputs(self, tapegyseg, eredeti_allapotok, restore_default_voltage=2.5, restore_default_current=0.1):
+    def restore_tap_outputs(self, tapegyseg, eredeti_allapotok, selected_channels, restore_default_voltage=2.5):
         try:
-            for ch, state in eredeti_allapotok.items():
+            restore_mode = getattr(self, 'restore_mode', 0)
+            for ch in selected_channels:
+                state = eredeti_allapotok.get(ch, {})
                 v = state.get('voltage')
-                a = state.get('current')
 
-                if v is None:
-                    v = restore_default_voltage
-                if a is None:
-                    a = restore_default_current
+                v = restore_default_voltage if restore_mode == 1 or v is None else v
 
                 tapegyseg.write(f':SOURce{ch}:VOLTage {v}')
-                tapegyseg.write(f':SOURce{ch}:CURRent {a}')
-                self.log(f"Tápegység Ch{ch} visszaállítva: {v} V, {a} A")
-        except Exception:
-            pass
+                self.log(f"Tápegység Ch{ch} visszaállítva: {v} V")
+        except Exception as exc:
+            self.log(f"Hiba a tápegység visszaállítása vagy kikapcsolása közben: {exc}")
+
+    def turn_off_tap_channels(self, tapegyseg, selected_channels):
+        try:
+            if hasattr(tapegyseg, 'turn_channel_on_off'):
+                tapegyseg.turn_channel_on_off(False, all_channels=False, channels=selected_channels)
+            else:
+                for ch in selected_channels:
+                    tapegyseg.write(f':OUTPut{ch}:STATe OFF')
+
+            for ch in selected_channels:
+                self.log(f"Tápegység Ch{ch} kikapcsolva.")
+        except Exception as exc:
+            self.log(f"Hiba a tápegység csatornáinak kikapcsolása közben: {exc}")
 
     def apply_restore_defaults(self, eredeti_allapotok, selected_channels, restore_def):
         restore_mode = getattr(self, 'restore_mode', 0)
@@ -233,9 +230,9 @@ class MeasurementController:
             return restore_def
 
         for ch in selected_channels:
-            if eredeti_allapotok.get(ch, {}).get('voltage') is None:
-                eredeti_allapotok[ch]['voltage'] = restore_def
-                self.log(f"Ch{ch}: eredeti érték hiányzott — használva a megadott alapérték: {restore_def} V")
+            eredeti_allapotok.setdefault(ch, {})
+            eredeti_allapotok[ch]['voltage'] = restore_def
+            self.log(f"Ch{ch}: fix visszaállási érték használva: {restore_def} V")
 
         self.restore_default = restore_def
         return restore_def
@@ -294,7 +291,7 @@ class MeasurementController:
                     tap = PowerSupply(self.tap_address, self.baud_rate)
                     # quick sanity query
                     try:
-                        _ = tap.query('*IDN?')
+                        _ = tap.ps.query('*IDN?')
                         self.log("✓ Tápegység (USB) elérhető.")
                     except Exception as e:
                         raise ConnectionError(f"TAP USB eszköz nem válaszol: {e}")
@@ -337,7 +334,8 @@ class MeasurementController:
                 self.log(f"Csatornafájl Ch{ch}: {channel_file_paths[ch]}")
 
             self.log("\n--- Mérés vége. Visszaállás eredeti V/I értékekre. ---")
-            self.restore_tap_outputs(tap, eredeti_allapotok, restore_default_voltage=restore_def)
+            self.restore_tap_outputs(tap, eredeti_allapotok, selected_channels, restore_default_voltage=restore_def)
+            self.turn_off_tap_channels(tap, selected_channels)
 
             if self.on_finished is not None:
                 self.on_finished()
@@ -351,7 +349,7 @@ class MeasurementController:
             if t_c is not None:
                 t_c.close()
             if tap is not None:
-                tap.close()
+                tap.ps.close()
             if context is not None:
                 try:
                     context.term()
@@ -362,7 +360,7 @@ class MeasurementController:
     def enable_selected_outputs(self, tap, selected_channels):
         for ch in selected_channels:
             try:
-                tap.write(f':OUTPut{ch}:STATe ON')
+                tap.ps.write(f':OUTPut{ch}:STATe ON')
             except Exception:
                 pass
 
@@ -445,9 +443,6 @@ class SNSPDControlGUI:
             'fesz_min': tk.StringVar(value="1.0"),
             'fesz_max': tk.StringVar(value="1.2"),
             'fesz_step': tk.StringVar(value="0.1"),
-            'aram_min': tk.StringVar(value="0.2"),
-            'aram_max': tk.StringVar(value="0.2"),
-            'aram_step': tk.StringVar(value="0.1"),
             'db_min': tk.StringVar(value="10"),
             'db_max': tk.StringVar(value="15"),
             'db_step': tk.StringVar(value="2"),
@@ -457,7 +452,6 @@ class SNSPDControlGUI:
 
         params = [
             ("Feszültség (V)", 'fesz_min', 'fesz_max', 'fesz_step'),
-            ("Áramerősség (A)", 'aram_min', 'aram_max', 'aram_step'),
             ("Csillapítás (dB)", 'db_min', 'db_max', 'db_step'),
         ]
         for label, min_key, max_key, step_key in params:
@@ -495,11 +489,11 @@ class SNSPDControlGUI:
             raise ValueError("A max érték nem lehet kisebb a min értéknél.")
 
         values = []
-        current = min_v
+        value = min_v
         eps = abs(step_v) * 1e-6
-        while current <= max_v + eps:
-            values.append(round(current, 6))
-            current += step_v
+        while value <= max_v + eps:
+            values.append(round(value, 6))
+            value += step_v
 
         if not values:
             values = [round(min_v, 6)]
@@ -514,25 +508,19 @@ class SNSPDControlGUI:
             v_max = float(values['fesz_max'].get())
             v_step = float(values['fesz_step'].get())
 
-            a_min = float(values['aram_min'].get())
-            a_max = float(values['aram_max'].get())
-            a_step = float(values['aram_step'].get())
-
             db_min = float(values['db_min'].get())
             db_max = float(values['db_max'].get())
             db_step = float(values['db_step'].get())
 
             v_values = self.generate_values(v_min, v_max, v_step)
-            a_values = self.generate_values(a_min, a_max, a_step)
             db_values = self.generate_values(db_min, db_max, db_step)
 
-            count = max(len(v_values), len(a_values), len(db_values))
+            count = max(len(v_values), len(db_values))
             steps = []
             for i in range(count):
                 v = v_values[min(i, len(v_values) - 1)]
-                a = a_values[min(i, len(a_values) - 1)]
                 db = db_values[min(i, len(db_values) - 1)]
-                steps.append({'fesz': v, 'aram': a, 'db': db})
+                steps.append({'fesz': v, 'db': db})
 
             channel_steps[ch] = steps
 
@@ -583,7 +571,7 @@ class SNSPDControlGUI:
         self.inditas_gomb.config(state=tk.NORMAL)
         self.leallitas_gomb.config(state=tk.DISABLED)
         self.channel_config_container.pack(fill=tk.X, padx=10, pady=10)
-        messagebox.showinfo("Kész", "A mérési sorozat lefutott. A tápegység visszaállt az eredeti V/I értékekre.")
+        messagebox.showinfo("Kész", "A mérési sorozat lefutott. A tápegység visszaállt, majd a csatornák kikapcsoltak.")
 
 
     def on_error(self, error):
