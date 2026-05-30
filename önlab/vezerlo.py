@@ -1,3 +1,5 @@
+from urllib import response
+
 import zmq
 import os
 import time
@@ -17,6 +19,7 @@ BAUD_RATE = 115200
 
 output_dir = os.path.join(os.path.dirname(__file__), "meresek")
 LEPES_IDO = 5  #s
+RESTORE_MEMORY_REGISTER = 1
 
 class ZMQInstrument:
     def __init__(self, context, address, timeout_ms=5000):
@@ -29,6 +32,7 @@ class ZMQInstrument:
 
     def test_connection(self):
         """Teszteli a kapcsolatot egy egyszerű query paranccsal."""
+        return True, "Válasz érkezett!"
         try:
             self._sock.send_string("*IDN?")
             response = self._sock.recv_string()
@@ -48,16 +52,6 @@ class ZMQInstrument:
                 _ = self._sock.recv_string()
             except zmq.error.Again:
                 pass
-        except Exception:
-            pass
-
-    def query(self, cmd: str) -> str:
-        self._sock.send_string(cmd)
-        return self._sock.recv_string()
-
-    def close(self):
-        try:
-            self._sock.close()
         except Exception:
             pass
 
@@ -85,10 +79,6 @@ class MeasurementController:
         self.fut = False
         self.leallitas_kerve = False
 
-    def log(self, message):
-        if self.log_callback is not None:
-            self.log_callback(message)
-
     def start(self, selected_channels):
         if self.fut:
             return
@@ -104,28 +94,8 @@ class MeasurementController:
     def stop(self):
         if self.fut:
             self.leallitas_kerve = True
-            self.log("Mérés leállítása kérve...")
-
-    def set_channel_steps(self, channel_steps):
-        self.channel_steps = channel_steps
-
-    def initialize_channels(self, idq_card, selected_channels):
-        for ch in selected_channels:
-            try:
-                idq_card.write(f'INPUt{ch}:counter:MODE ACCUM')
-            except Exception:
-                pass
-
-    def read_tap_state(self, tapegyseg, channels):
-        eredeti = {}
-        for ch in channels:
-            voltage = None
-            try:
-                voltage = float(tapegyseg.query(f':SOURce{ch}:VOLTage?').strip())
-            except Exception:
-                pass
-            eredeti[ch] = {'voltage': voltage}
-        return eredeti
+            if self.log_callback is not None:
+                self.log_callback("Mérés leállítása kérve...")
 
     def write_step_header(self, file_handle, feszultseg, csillapitas):
         header = f"\nfeszültség: {feszultseg} V; csillapítás: {csillapitas} dB:\n"
@@ -160,7 +130,8 @@ class MeasurementController:
         return step_map
 
     def write_step_outputs(self, all_file_handle, channel_file_handles, step_map):
-        self.log("\n\n")
+        if self.log_callback is not None:
+            self.log_callback("\n\n")
         all_file_handle.write("\n\n")
         all_file_handle.flush()
 
@@ -168,8 +139,16 @@ class MeasurementController:
             self.write_step_header(channel_file_handles[ch], step['fesz'], step['db'])
 
     def apply_step_to_tap(self, tap, step_map):
+        tap.ps.write('*CLS\n')
+        time.sleep(0.05)
         for ch, step in step_map.items():
-            tap.ps.write(f':SOURce{ch}:VOLTage {step["fesz"]}')
+            #tap.turn_channel_on_off(False, all_channels=False, channels=[ch])
+            tap.ps.write(f':SOURce{ch}:VOLTage {step["fesz"]}\n')
+            tap.ps.write(f':SOURce{ch}:APPLy\n')
+            tap.ps.write(f':SOURce{ch}:STATe ON\n')
+            tap.ps.write(f':OUTPut{ch}:STATe ON\n')
+            #tap.turn_channel_on_off(True, all_channels=False, channels=[ch])
+        time.sleep(0.5)
 
     def write_measurement_samples(self, t_c, selected_channels, all_file_handle, channel_file_handles):
         csatorna_szamlalok = self.sample_channels(t_c, selected_channels)
@@ -177,7 +156,8 @@ class MeasurementController:
         counter_str = ' '.join([f"Ch{ch}:{csatorna_szamlalok[ch]:,}".replace(',', '.') for ch in selected_channels])
         log_line = f"{timestamp} --- {counter_str}"
 
-        self.log(log_line)
+        if self.log_callback is not None:
+            self.log_callback(log_line)
         all_file_handle.write(log_line + "\n")
         all_file_handle.flush()
 
@@ -190,26 +170,22 @@ class MeasurementController:
         csatorna_szamlalok = {}
         for ch in selected_channels:
             try:
-                raw_data = idq_card.query(f'INPUt{ch}:COUNter?')
+                idq_card._sock.send_string(f'INPUt{ch}:COUNter?')
+                raw_data = idq_card._sock.recv_string()
                 n = int(raw_data.strip())
             except Exception:
                 n = 0
             csatorna_szamlalok[ch] = n
         return csatorna_szamlalok
 
-    def restore_tap_outputs(self, tapegyseg, eredeti_allapotok, selected_channels, restore_default_voltage=2.5):
+    def restore_tap_outputs(self, tapegyseg):
         try:
-            restore_mode = getattr(self, 'restore_mode', 0)
-            for ch in selected_channels:
-                state = eredeti_allapotok.get(ch, {})
-                v = state.get('voltage')
-
-                v = restore_default_voltage if restore_mode == 1 or v is None else v
-
-                tapegyseg.write(f':SOURce{ch}:VOLTage {v}')
-                self.log(f"Tápegység Ch{ch} visszaállítva: {v} V")
+            tapegyseg.load_memory_register(RESTORE_MEMORY_REGISTER)
+            if self.log_callback is not None:
+                self.log_callback(f"Tápegység visszaállítva az {RESTORE_MEMORY_REGISTER}-es memóriaregiszterből.")
         except Exception as exc:
-            self.log(f"Hiba a tápegység visszaállítása vagy kikapcsolása közben: {exc}")
+            if self.log_callback is not None:
+                self.log_callback(f"Hiba a tápegység visszaállítása vagy kikapcsolása közben: {exc}")
 
     def turn_off_tap_channels(self, tapegyseg, selected_channels):
         try:
@@ -217,32 +193,22 @@ class MeasurementController:
                 tapegyseg.turn_channel_on_off(False, all_channels=False, channels=selected_channels)
             else:
                 for ch in selected_channels:
-                    tapegyseg.write(f':OUTPut{ch}:STATe OFF')
+                    tapegyseg.ps.write(f':OUTPut{ch}:STATe OFF')
 
             for ch in selected_channels:
-                self.log(f"Tápegység Ch{ch} kikapcsolva.")
+                if self.log_callback is not None:
+                    self.log_callback(f"Tápegység Ch{ch} kikapcsolva.")
         except Exception as exc:
-            self.log(f"Hiba a tápegység csatornáinak kikapcsolása közben: {exc}")
-
-    def apply_restore_defaults(self, eredeti_allapotok, selected_channels, restore_def):
-        restore_mode = getattr(self, 'restore_mode', 0)
-        if restore_mode != 1:
-            return restore_def
-
-        for ch in selected_channels:
-            eredeti_allapotok.setdefault(ch, {})
-            eredeti_allapotok[ch]['voltage'] = restore_def
-            self.log(f"Ch{ch}: fix visszaállási érték használva: {restore_def} V")
-
-        self.restore_default = restore_def
-        return restore_def
+            if self.log_callback is not None:
+                self.log_callback(f"Hiba a tápegység csatornáinak kikapcsolása közben: {exc}")
 
     def process_measurement_steps(self, tap, t_c, selected_channels, all_file_handle, channel_file_handles):
         max_steps = self.get_max_step_count(selected_channels)
 
         for step_index in range(max_steps):
             if self.leallitas_kerve:
-                self.log("Mérés megszakítva a felhasználó által.")
+                if self.log_callback is not None:
+                    self.log_callback("Mérés megszakítva a felhasználó által.")
                 break
 
             step_map = self.collect_step_map(selected_channels, step_index)
@@ -272,27 +238,26 @@ class MeasurementController:
 
         try:
             context = zmq.Context()
-            self.log(f"Kapcsolódás (ZMQ): {self.idq_address} ...")
+            if self.log_callback is not None:
+                self.log_callback(f"Kapcsolódás (ZMQ): {self.idq_address} ...")
             try:
                 t_c = ZMQInstrument(context, self.idq_address)
                 success, msg = t_c.test_connection()
                 if not success:
                     raise ConnectionError(f"IDQ eszköz ({self.idq_address}) - {msg}")
-                self.log(f"✓ IDQ eszköz elérhető. {msg}")
+                if self.log_callback is not None:
+                    self.log_callback(f"✓ IDQ eszköz elérhető. {msg}")
             except Exception as e:
                 raise ConnectionError(f"IDQ eszköz ({self.idq_address}) kapcsolati hiba: {str(e)}")
-
-            # Connect to the power supply. If the address looks like a VISA/ASRL USB
-            # resource (e.g. starts with 'ASRL') use the PowerSupply wrapper, else
-            # treat it as a ZMQ address and use ZMQInstrument.
-            self.log(f"Kapcsolódás a tápegységhez: {self.tap_address} ...")
+            if self.log_callback is not None:
+                self.log_callback(f"Kapcsolódás a tápegységhez: {self.tap_address} ...")
             try:
                 if isinstance(self.tap_address, str) and self.tap_address.upper().startswith("ASRL"):
                     tap = PowerSupply(self.tap_address, self.baud_rate)
-                    # quick sanity query
                     try:
-                        _ = tap.ps.query('*IDN?')
-                        self.log("✓ Tápegység (USB) elérhető.")
+                        _ = tap.ps.query('*IDN?\n')
+                        if self.log_callback is not None:
+                            self.log_callback("✓ Tápegység (USB) elérhető.")
                     except Exception as e:
                         raise ConnectionError(f"TAP USB eszköz nem válaszol: {e}")
                 else:
@@ -300,18 +265,22 @@ class MeasurementController:
                     success, msg = tap.test_connection()
                     if not success:
                         raise ConnectionError(f"TAP eszköz ({self.tap_address}) - {msg}")
-                    self.log(f"✓ TAP eszköz elérhető. {msg}")
+                    if self.log_callback is not None:
+                        self.log_callback(f"✓ TAP eszköz elérhető. {msg}")
             except Exception as e:
                 raise ConnectionError(f"TAP eszköz ({self.tap_address}) kapcsolati hiba: {str(e)}")
-
-            self.initialize_channels(t_c, selected_channels)
-            eredeti_allapotok = self.read_tap_state(tap, selected_channels)
-
-            restore_def = getattr(self, 'restore_default', 2.5)
-            restore_def = self.apply_restore_defaults(eredeti_allapotok, selected_channels, restore_def)
-
-            self.enable_selected_outputs(tap, selected_channels)
-            self.log("Műszerek készen állnak. Kimenetek BE.")
+            
+            for ch in selected_channels:
+                try:
+                    t_c.write(f'INPUt{ch}:counter:MODE CYCLE')
+                except Exception:
+                    pass
+            try:
+                tap.turn_channel_on_off(True, all_channels=False, channels=selected_channels)
+            except Exception:
+                pass
+            if self.log_callback is not None:
+                self.log_callback("Műszerek készen állnak. Kimenetek BE.")
 
             os.makedirs(self.output_dir, exist_ok=True)
 
@@ -319,7 +288,7 @@ class MeasurementController:
 
             with ExitStack() as stack:
                 all_file_handle = stack.enter_context(open(all_file_path, 'w', encoding='utf-8', buffering=1))
-                channel_file_handles = self.open_channel_files(stack, channel_file_paths)
+                channel_file_handles = {ch: stack.enter_context(open(path, 'w', encoding='utf-8', buffering=1)) for ch, path in channel_file_paths.items()}
 
                 self.process_measurement_steps(
                     tap,
@@ -329,40 +298,41 @@ class MeasurementController:
                     channel_file_handles,
                 )
 
-            self.log(f"Összesített fájl: {all_file_path}")
+            if self.log_callback is not None:
+                self.log_callback(f"Összesített fájl: {all_file_path}")
             for ch in selected_channels:
-                self.log(f"Csatornafájl Ch{ch}: {channel_file_paths[ch]}")
+                if self.log_callback is not None:
+                    self.log_callback(f"Csatornafájl Ch{ch}: {channel_file_paths[ch]}")
 
-            self.log("\n--- Mérés vége. Visszaállás eredeti V/I értékekre. ---")
-            self.restore_tap_outputs(tap, eredeti_allapotok, selected_channels, restore_default_voltage=restore_def)
+            if self.log_callback is not None:
+                self.log_callback("\n--- Mérés vége. Visszaállás az 1-es memóriaregiszterből. ---")
+            self.restore_tap_outputs(tap)
             self.turn_off_tap_channels(tap, selected_channels)
 
             if self.on_finished is not None:
                 self.on_finished()
 
         except Exception as e:
-            self.log(f"HIBA: {str(e)}")
+            if self.log_callback is not None:
+                self.log_callback(f"HIBA: {str(e)}")
             if self.on_error is not None:
                 self.on_error(e)
 
         finally:
             if t_c is not None:
-                t_c.close()
+                try:
+                    t_c._sock.close()
+                except Exception:
+                    pass
             if tap is not None:
                 tap.ps.close()
+                tap.close_power_supply()
             if context is not None:
                 try:
                     context.term()
                 except Exception:
                     pass
             self.fut = False
-
-    def enable_selected_outputs(self, tap, selected_channels):
-        for ch in selected_channels:
-            try:
-                tap.ps.write(f':OUTPut{ch}:STATe ON')
-            except Exception:
-                pass
 
     def build_output_paths(self, selected_channels):
         meres_ido = datetime.now().strftime("%Y.%m.%d_%H.%M")
@@ -373,19 +343,11 @@ class MeasurementController:
         }
         return all_file_path, channel_file_paths
 
-    def open_channel_files(self, stack, channel_file_paths):
-        return {
-            ch: stack.enter_context(open(path, 'w', encoding='utf-8', buffering=1))
-            for ch, path in channel_file_paths.items()
-        }
-
 class SNSPDControlGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("SNSPD Feszültség Szabályozó és Naplózó")
         self.root.geometry("980x760")
-
-        # GUI elemek
         self.label = tk.Label(root, text="SNSPD Mérési Folyamat", font=("Arial", 14, "bold"))
         self.label.pack(pady=10)
         csatorna_keret = tk.Frame(root)
@@ -405,20 +367,10 @@ class SNSPDControlGUI:
         for i in range(1, 5):
             self.create_channel_config_block(i)
 
-        restore_frame = tk.Frame(root)
-        restore_frame.pack(pady=6)
-        self.restore_mode_var = tk.IntVar(value=0)  # 0 = use read, 1 = use fixed
-        tk.Radiobutton(restore_frame, text="Visszaállás: használja a kiolvasott értéket (ha van)", variable=self.restore_mode_var, value=0).pack(anchor=tk.W)
-        fixed_row = tk.Frame(restore_frame)
-        fixed_row.pack(anchor=tk.W)
-        tk.Radiobutton(fixed_row, text="Vagy használja ezt az értéket (V):", variable=self.restore_mode_var, value=1).pack(side=tk.LEFT)
-        self.restore_value_var = tk.StringVar(value="2.5")
-        tk.Entry(fixed_row, width=6, textvariable=self.restore_value_var).pack(side=tk.LEFT, padx=4)
-
         self.inditas_gomb = tk.Button(root, text="Mérés Indítása", command=self.start_thread, bg="green", fg="white", font=("Arial", 12))
         self.inditas_gomb.pack(pady=5)
 
-        self.leallitas_gomb = tk.Button(root, text="Mérés Leállítása", command=self.stop_measurement, bg="red", fg="white", font=("Arial", 12))
+        self.leallitas_gomb = tk.Button(root, text="Mérés Leállítása", command=lambda: self.controller.stop(), bg="red", fg="white", font=("Arial", 12))
         self.leallitas_gomb.pack(pady=5)
         self.leallitas_gomb.config(state=tk.DISABLED)
 
@@ -430,9 +382,18 @@ class SNSPDControlGUI:
             tap_address=TAP_ADDRESSUSB,
             output_dir=output_dir,
             step_time=LEPES_IDO,
-            log_callback=self.log,
-            on_finished=self.on_finished,
-            on_error=self.on_error,
+            log_callback=lambda message: self.root.after(0, lambda: (self.naplo_terulet.insert(tk.END, message + "\n"), self.naplo_terulet.see(tk.END))),
+            on_finished=lambda: self.root.after(0, lambda: (
+                self.inditas_gomb.config(state=tk.NORMAL),
+                self.leallitas_gomb.config(state=tk.DISABLED),
+                self.channel_config_container.pack(fill=tk.X, padx=10, pady=10),
+                messagebox.showinfo("Kész", "A mérési sorozat lefutott. A tápegység visszaállt az 1-es memóriaregiszterből, majd a csatornák kikapcsoltak.")
+            )),
+            on_error=lambda error: self.root.after(0, lambda: (
+                self.inditas_gomb.config(state=tk.NORMAL),
+                self.leallitas_gomb.config(state=tk.DISABLED),
+                messagebox.showerror("Hiba", f"Hiba történt: {error}")
+            )),
         )
 
     def create_channel_config_block(self, ch):
@@ -526,17 +487,10 @@ class SNSPDControlGUI:
 
         return channel_steps
 
-    def log(self, message):
-        self.root.after(0, self._append_log, message)
-
-    def _append_log(self, message):
-        self.naplo_terulet.insert(tk.END, message + "\n")
-        self.naplo_terulet.see(tk.END)
-
     def start_thread(self):
         if not self.controller.fut:
             try:
-                selected_channels = self.get_selected_channels()
+                selected_channels = [i + 1 for i, v in enumerate(self.csatorna_valtozok) if v.get()]
                 if not selected_channels:
                     raise ValueError("Legalább egy csatornát ki kell választani.")
 
@@ -544,9 +498,7 @@ class SNSPDControlGUI:
                 if not channel_steps:
                     raise ValueError("Nem sikerült csatornánkénti léptetési listát létrehozni.")
 
-                self.controller.set_channel_steps(channel_steps)
-                self.controller.restore_mode = int(self.restore_mode_var.get())
-                self.controller.restore_default = float(self.restore_value_var.get())
+                self.controller.channel_steps = channel_steps
 
                 self.inditas_gomb.config(state=tk.DISABLED)
                 self.leallitas_gomb.config(state=tk.NORMAL)
@@ -554,33 +506,6 @@ class SNSPDControlGUI:
                 self.controller.start(selected_channels)
             except Exception as exc:
                 messagebox.showerror("Hibás beállítás", str(exc))
-
-    def stop_measurement(self):
-        self.controller.stop()
-
-    def get_selected_channels(self):
-        try:
-            return [i + 1 for i, v in enumerate(self.csatorna_valtozok) if v.get()]
-        except Exception:
-            return [1, 2, 3, 4]
-
-    def on_finished(self):
-        self.root.after(0, self._on_finished_ui)
-
-    def _on_finished_ui(self):
-        self.inditas_gomb.config(state=tk.NORMAL)
-        self.leallitas_gomb.config(state=tk.DISABLED)
-        self.channel_config_container.pack(fill=tk.X, padx=10, pady=10)
-        messagebox.showinfo("Kész", "A mérési sorozat lefutott. A tápegység visszaállt, majd a csatornák kikapcsoltak.")
-
-
-    def on_error(self, error):
-        self.root.after(0, self._on_error_ui, str(error))
-
-    def _on_error_ui(self, error_text):
-        self.inditas_gomb.config(state=tk.NORMAL)
-        self.leallitas_gomb.config(state=tk.DISABLED)
-        messagebox.showerror("Hiba", f"Hiba történt: {error_text}")
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -71,7 +71,7 @@ class PowerSupply:
             for channel in channels:
                 if 1 <= channel <= 4 and isinstance(channel, int):
                     self.ps.write(f'OUTP{channel}:STAT ' + string_end)
-        time.sleep(5)
+        time.sleep(2)
 
     def turn_screen_on_off(self, turn_on):
         """
