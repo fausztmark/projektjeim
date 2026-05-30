@@ -41,7 +41,7 @@ class PowerSupply:
         self._check_power_supply()
         if reg_num >= 7 or reg_num < 0 or not isinstance(reg_num, int):
             raise ValueError("Register number must be an integer between 0 and 7.")
-        self.ps.write(f'*RCL {reg_num}')
+        self.ps.write(f'*RCL {reg_num}\n')
 
     def get_out_current(self, channel_id: int) -> float:
         """
@@ -64,13 +64,13 @@ class PowerSupply:
         self._check_power_supply()
         string_end = "ON" if switch_on else "OFF"
         if all_channels:
-            self.ps.write('ALLOUT' + string_end)
+            self.ps.write('ALLOUT' + string_end + '\n')
         else:
             if channels is None:
                 raise ValueError("Channel list must be specified if you don't want to turn all of them on/off.")
             for channel in channels:
                 if 1 <= channel <= 4 and isinstance(channel, int):
-                    self.ps.write(f'OUTP{channel}:STAT ' + string_end)
+                    self.ps.write(f'OUTP{channel}:STAT ' + string_end + '\n')
         time.sleep(2)
 
     def turn_screen_on_off(self, turn_on):
@@ -81,7 +81,7 @@ class PowerSupply:
         """
         self._check_power_supply()
         string_end = "ON" if turn_on else "OFF"
-        self.ps.write("DISP:ENAB " + string_end)
+        self.ps.write("DISP:ENAB " + string_end + '\n')
 
     # Convenience wrappers so PowerSupply behaves like a simple instrument
     def write(self, cmd: str):

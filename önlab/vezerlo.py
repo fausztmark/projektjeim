@@ -193,7 +193,7 @@ class MeasurementController:
                 tapegyseg.turn_channel_on_off(False, all_channels=False, channels=selected_channels)
             else:
                 for ch in selected_channels:
-                    tapegyseg.ps.write(f':OUTPut{ch}:STATe OFF')
+                    tapegyseg.ps.write(f':OUTPut{ch}:STATe OFF\n')
 
             for ch in selected_channels:
                 if self.log_callback is not None:
