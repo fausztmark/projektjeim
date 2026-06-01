@@ -1,7 +1,7 @@
-\documentclass{article}
+\documentclass[a4paper,12pt]{article}
 
-% Language setting
-% Replace `english' with e.g. `spanish' to change the document language
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
 \usepackage[magyar]{babel}
 
 % Set page size and margins
@@ -51,50 +51,179 @@ Dark Count Rate:
     \item \href{https://opg.optica.org/ol/fulltext.cfm?uri=ol-40-14-3428} {2}
     \item \href{https://www.sciencedirect.com/science/article/pii/S2772830722000059} {3}
 \end{itemize}
-Detection Efficiency:
+
+\section{Célok és elvárt eredmények meghatározása}
+
+
+
+\section{Használt kód áttekintése}
+Ez a fejezet a projekt Python kódjának működését foglalja össze. A rendszer két laboratóriumi eszközt kezel: egy időkontrollert ZMQ kapcsolaton keresztül, valamint egy tápegységet VISA és SCPI parancsokkal. A fő alkalmazás grafikus felületen teszi lehetővé a csatornák kiválasztását, a feszültség- és csillapításlépések megadását, majd a mérési ciklus automatikus lefuttatását.
+
 \begin{itemize}
-    \item \href{https://opg.optica.org/abstract.cfm?uri=optica-7-12-1649} {1}
-    \item \href{https://www.idquantique.com/quantum-detection-systems/snspd-technology/} {2}
-    \item \href{https://www.researching.cn/articles/OJ159335bcc4f46a7d} {3}
+    \item \texttt{vezerlo.py}: grafikus vezérlő és mérési logika.
+    \item \texttt{power\_source.py}: tápegység-illesztő réteg.
+    \item \texttt{tap\_konzol\_teszt.py}: interaktív parancssoros tesztprogram.
+    \item \texttt{Examples/Python}: mintaprogramok és segédmodulok az adatgyűjtéshez.
 \end{itemize}
-Dead Time:
+    
+\subsection{vezerlo.py}
+Ez a fő alkalmazás. Tkinter alapú grafikus felületet ad, és a kiválasztott csatornákon lépésenként végrehajtja a mérést.
+
+
+\subsubsection{Fő állandók}
 \begin{itemize}
-    \item \href{https://www.photonspot.com/detectors} {1}
-    \item \href{https://www.swabianinstruments.com/applications/photon-number-resolution/} {2}
-    \item \href{https://arxiv.org/abs/2508.11832} {3}
+    \item \texttt{IDQ\_ADDRESS}: az időkontroller ZMQ címe.
+    \item \texttt{TAP\_ADDRESSUSB}: a tápegység VISA címe.
+    \item \texttt{BAUD\_RATE}: a soros kapcsolat sebessége.
+    \item \texttt{output\_dir}: a mérések mentési könyvtára.
+    \item \texttt{LEPES\_IDO}: egy lépés időtartama másodpercben.
+    \item \texttt{RESTORE\_MEMORY\_REGISTER}: a mérés végén visszatöltött memóriaregiszter.
 \end{itemize}
-Afterimpulse:
+
+\subsubsection{ZMQInstrument}
+Ez az osztály a ZMQ \texttt{REQ} socket kezelésére szolgál.
+
 \begin{itemize}
-    \item \href{https://link.aps.org/doi/10.1103/PhysRevB.108.054507} 1
-    \item \href{https://arxiv.org/abs/2303.17861} 2
-    \item \href{https://pubs.aip.org/aip/jap/article/113/21/213102/371499/Investigations-of-afterpulsing-and-detection} 3
+    \item A konstruktor létrehozza és az adott címre csatlakoztatja a socketet.
+    \item A \texttt{test\_connection()} kapcsolati próbát végez. A jelenlegi kódban egy egyszerű siker-visszatérés szerepel, a valódi lekérdezéses ág kommentben maradt.
+    \item A \texttt{write()} parancsot küld, és megpróbálja kiolvasni a választ.
 \end{itemize}
-Timing Jitter:
+
+\subsubsection{MeasurementController}
+Ez az osztály vezérli a teljes mérési folyamatot.
+
 \begin{itemize}
-    \item \href{https://link.aps.org/doi/10.1103/PhysRevApplied.11.034062} 1
-    \item \href{https://arxiv.org/pdf/1308.0763} 2
-    \item \href{https://pubs.aip.org/aip/apl/article/122/4/044001/2870246/Time-walk-and-jitter-correction-in-SNSPDs-at-high} 3
+    \item A \texttt{start()} háttérszálon indítja a mérést.
+    \item A \texttt{stop()} leállítási kérést állít be.
+    \item A \texttt{build\_output\_paths()} létrehozza az összesített és csatornaspecifikus kimeneti fájlneveket.
+    \item A \texttt{get\_channel\_step()} és a \texttt{collect\_step\_map()} csatornánként kiválasztja az aktuális lépéshez tartozó beállítást.
+    \item A \texttt{generate\_values()} a min/max/lépés paraméterekből értéklistát épít.
+    \item A \texttt{apply\_step\_to\_tap()} SCPI parancsokkal beállítja a tápegység kimenetét.
+    \item A \texttt{sample\_channels()} lekéri az aktuális számlálóértékeket az időkontrollertől.
+    \item A \texttt{write\_measurement\_samples()} naplózza az összesített és csatornafájlokba a kiolvasott értékeket.
+    \item A \texttt{process\_measurement\_steps()} végigiterál a lépéseken, és egy lépésen belül másodpercenként mintát vesz.
+    \item A \texttt{restore\_tap\_outputs()} visszatölti a tápegység memóriaregiszterét.
+    \item A \texttt{turn\_off\_tap\_channels()} kikapcsolja a kiválasztott csatornákat.
+    \item A \texttt{run\_measurement()} a teljes életciklust összefogja: kapcsolódás, mérés, fájlírás, visszaállítás, lezárás.
 \end{itemize}
-Characterization:
+
+\subsubsection{Mérési sorrend}
+\begin{enumerate}
+    \item A felhasználó kiválasztja az aktív csatornákat.
+    \item A GUI csatornánként feszültség- és csillapításlépcső-listát állít elő.
+    \item A program ZMQ-n keresztül kapcsolódik az időkontrollerhez.
+    \item A program VISA-n keresztül kapcsolódik a tápegységhez.
+    \item A kiválasztott csatornák számláló üzemmódba kerülnek.
+    \item A tápegység kimenetei bekapcsolnak.
+    \item Minden lépésben a megfelelő SCPI parancsok beállítják a feszültséget.
+    \item A program a lépés ideje alatt másodpercenként számlálóértékeket olvas.
+    \item A futás végén a tápegység visszaáll az 1-es memóriaregiszterből, majd a csatornák kikapcsolnak.
+\end{enumerate}
+
+\subsubsection{SNSPDControlGUI}
+Ez az osztály építi fel a grafikus felületet.
+
 \begin{itemize}
-    \item \href{https://arxiv.org/pdf/1810.11256} 1
-    \item \href{https://www.nature.com/articles/s41598-024-81776-2} 2
-    \item \href{https://ieeexplore.ieee.org/document/10655273/} 3
+    \item Négy csatorna jelölőnégyzetet jelenít meg.
+    \item Minden csatornához külön konfigurációs blokkot hoz létre.
+    \item A \texttt{create\_channel\_config\_block()} min/max/lépés mezőket készít feszültségre és csillapításra.
+    \item A \texttt{toggle\_channel\_config\_visibility()} elrejti vagy megjeleníti az adott csatorna paneljét.
+    \item A \texttt{build\_channel\_steps()} a GUI mezőiből lépéslistát állít össze, és a rövidebb listákat az utolsó értékkel hosszabbítja.
+    \item A \texttt{start\_thread()} ellenőrzi a beállításokat, majd elindítja a mérési folyamatot.
 \end{itemize}
-Other:
+
+\subsubsection{Kimeneti fájlok}
+Minden méréshez egy összesített napló és csatornánként külön fájl készül a \texttt{meresek} könyvtárban. A fájlnevek időbélyeget és csatornaszámot tartalmaznak.
+
+\subsection{power\_source.py}
+Ez a modul egy vékony, egységes illesztőréteg a tápegységhez. A \texttt{PowerSupply} osztály a \texttt{pyvisa} könyvtárra épül.
+
+\subsubsection{Fő metódusok}
 \begin{itemize}
-    \item \ref{opt:5 Optical receivers} 5 Optical receivers.pdf
+    \item A konstruktor megnyitja a VISA erőforrást, és beállítja a baud rate-et.
+    \item A \texttt{load\_memory\_register()} egy memóriaregisztert tölt vissza a készüléken.
+    \item A \texttt{turn\_channel\_on\_off()} egyes vagy összes csatornát kapcsol ki/be.
+    \item A \texttt{turn\_screen\_on\_off()} a kijelző állapotát vezérli.
+    \item A \texttt{get\_out\_current()} egy adott csatorna kimeneti értékét kérdezi le.
+    \item A \texttt{write()} és \texttt{query()} proxy metódusok a nyers VISA kommunikációhoz.
+    \item A \texttt{close()} biztonságosan lezárja az eszközt.
 \end{itemize}
-\begin{figure}
-    \centering
-    \includegraphics[width=0.5\linewidth]{5 Optical receivers.pdf}
-    \caption{Fájlok között lehet megnyitni}
-    \label{opt:5 Optical receivers}
-\end{figure}
+
+\subsubsection{Megjegyzés}
+A modul jelenlegi formájában közvetlen eszközkezelést alkalmaz. A leválás vagy kommunikációs megszakítás részletesebb kezelése később továbbfejleszthető.
+
+\subsection{tap\_konzol\_teszt.py}
+Ez a fájl egy interaktív parancssoros tesztprogram a tápegységhez. Nem a fő mérési folyamatot futtatja, hanem kézi ellenőrzésre szolgál.
+
+\subsubsection{Segédfüggvények}
+\begin{itemize}
+    \item A \texttt{prompt\_text()}, \texttt{prompt\_int()} és \texttt{prompt\_float()} függvények felhasználói bemenetet kérnek.
+    \item A \texttt{prompt\_channels()} csatornalistát olvas be, és ellenőrzi, hogy a csatornák az 1--4 tartományba essenek.
+    \item A \texttt{parse\_first\_float()} a válaszból kinyeri az első számértéket.
+    \item A \texttt{normalize\_state()} az on/off jellegű válaszokat egységes formára alakítja.
+\end{itemize}
+
+\subsection{PowerSupplyConsoleTester}
+Az osztály a kézi tápegység-ellenőrzések összefogására szolgál.
+
+\begin{itemize}
+    \item A \texttt{connect()} megnyitja az eszközt és lekérdezi az azonosítást.
+    \item A \texttt{query\_raw()} és \texttt{write\_raw()} közvetlen SCPI kommunikációt adnak.
+    \item A \texttt{verify\_voltage()} visszaellenőrzi a beállított feszültséget.
+    \item A \texttt{verify\_output\_state()} ellenőrzi a kimeneti állapotot.
+    \item A \texttt{show\_channel\_status()} csatornánként kijelzi a feszültséget, áramot és kimeneti állapotot.
+    \item A \texttt{set\_voltage()} és \texttt{set\_output\_state()} kézi állításra szolgálnak.
+    \item A \texttt{all\_outputs()} az összes kimenetet egyszerre kapcsolja.
+    \item A \texttt{recall\_memory\_register()} visszahívja a beállításokat, majd állapotot olvas vissza.
+    \item A \texttt{restore\_then\_shutdown()} a visszatöltést és a csatornák lekapcsolását együtt végzi.
+    \item A \texttt{apply\_step\_to\_tap()} egy lépésnyi feszültségbeállítást küld ki a tápegységre.
+\end{itemize}
+
+\subsubsection{Menü}
+A konzolos menü azonosítást, feszültségbeállítást, kimenetkapcsolást, memóriaregiszter visszahívást, státuszlekérdezést, kijelzővezérlést és nyers SCPI parancs küldését támogatja.
+
+\subsection{\Examples/Python}
+Ez a könyvtár mintaprogramokat és segédmodulokat tartalmaz az időkontrolleres adatgyűjtéshez.
+
+\subsubsection{Segédmodulok}
+\begin{itemize}
+    \item \texttt{utils/common.py}: hostellenőrzés, ZMQ kapcsolódás, SCPI és DLT segédfüggvények, bemeneti tartományellenőrzés.
+    \item \texttt{utils/plot.py}: hisztogramok szűrése és ábrázolása.
+    \item \texttt{utils/acquisitions/coincidences.py}: egybeeséses számlálók konfigurálása és kiolvasása.
+    \item \texttt{utils/acquisitions/counts\_over\_time.py}: időbeli számlálógyűjtés és mentés.
+    \item \texttt{utils/acquisitions/histograms.py}: hisztogram-gyűjtés és fájlba mentés.
+    \item \texttt{utils/acquisitions/streams.py}: stream kliens implementáció.
+    \item \texttt{utils/acquisitions/timestamps.py}: időbélyeges gyűjtés megnyitása, zárása és kiolvasása.
+\end{itemize}
+
+\subsubsection{Mintaprogramok}
+\begin{itemize}
+    \item \texttt{Inputs\_status/inputs\_status.py}: bemenetek állapotának lekérdezése.
+    \item \texttt{Histogram\_acquisition/histogram\_acquisition.py}: hisztogramgyűjtés alapváltozata.
+    \item \texttt{Histogram\_acquisition\_filtred/histogram\_acquisition\_filtred.py}: szűrt hisztogramgyűjtés.
+    \item \texttt{Coincidence\_counters\_acquisition/coincidence\_counters\_acquisition.py}: egybeesési számlálók gyűjtése.
+    \item \texttt{Precise\_counters\_acquisition\_over\_time/*.py}: pontosabb, időbeli számlálógyűjtések.
+    \item \texttt{Read\_binary\_timestamps/read\_binary\_timestamps.py}: bináris időbélyegek beolvasása és átalakítása.
+    \item \texttt{Timestamp\_acquisition/*.py}: időbélyeges adatgyűjtés alapváltozatai.
+    \item \texttt{Timestamp\_acquisition\_stream/*.py}: streamelt időbélyeges gyűjtés.
+    \item \texttt{Timestamp\_acquisition\_sync\_stream/*.py}: szinkronizált streamelt gyűjtés.
+    \item \texttt{Timestamp\_acquisition\_multi\_tc/}: többkontrolleres adatgyűjtési csomag konfigurációs sémával, csatlakozási és setup réteggel.
+\end{itemize}
+
+\subsubsection{Többkontrolleres csomag}
+A \texttt{Timestamp\_acquisition\_multi\_tc/multi\_tc\_acquisition} alkönyvtár különösen fontos, mert itt találhatók a konfiguráció-ellenőrzés, az eszközkapcsolatok felépítése, az akvizíciós és leállítási folyamatok, a hisztogram-export és a kivételosztályok.
+
+\subsection{Összegzés}
+A projekt kódja két fő rétegre bontható: az egyik a laboratóriumi eszközök alacsony szintű kommunikációja, a másik a mérési logika és a hozzá tartozó felhasználói felület.
+
+\section{Eredmények és kiértékelése}
+
+
 
 \section{Gondolatok, ötletek}
 SNSPD adatai (amiket megtaláltam)
-\begin{figure}
+
+\begin{itemize}
     \item Kritikus hőmérséklet: 
     \item Energiarés: 
     \item Koherencia-hossz: 
@@ -104,97 +233,6 @@ SNSPD adatai (amiket megtaláltam)
     \item Bias áram: 15 $\mu$A és 27 $\mu$A
     \item Üzemi hőmérséklet: 0,8K
     \item Foton hullámhossz: < 500 nm és > 2000 nm
-\end{figure}
-\section{ToDos}
-cél, eredmény, hogyan tudom felhasználni, vázlat hogy majd összefüggő legyen
-\begin{enumerate}
-    \item kalkulások és becslések lehetségesek-e? Miket vár a model (tudjuk-e használni)
-    \item id281 snspd megnézni az adatokat, tudjuk-e használni (teams)
-    \item összefoglaló az első forrásból
-    \item teams cikk olvasás (1foton forrás, detektálók)
-    \item első forrásból kigyűjteni a zajt és meglepő dolgokat
-\end{enumerate}
-
-
-\subsection{How to create Sections and Subsections}
-
-Simply use the section and subsection commands, as in this example document! With Overleaf, all the formatting and numbering is handled automatically according to the template you've chosen. If you're using the Visual Editor, you can also create new section and subsections via the buttons in the editor toolbar.
-
-\subsection{How to include Figures}
-
-First you have to upload the image file from your computer using the upload link in the file-tree menu. Then use the includegraphics command to include it in your document. Use the figure environment and the caption command to add a number and a caption to your figure. See the code for Figure  in this section for an example.
-
-Note that your figure will automatically be placed in the most appropriate place for it, given the surrounding text and taking into account other figures or tables that may be close by. You can find out more about adding images to your documents in this help article on \href{https://www.overleaf.com/learn/how-to/Including_images_on_Overleaf}{including images on Overleaf}.
-
-
-
-\subsection{How to add Tables}
-
-Use the table and tabular environments for basic tables --- see Table~\ref{tab:widgets}, for example. For more information, please see this help article on \href{https://www.overleaf.com/learn/latex/tables}{tables}.
-
-\begin{table}
-\centering
-\begin{tabular}{l|r}
-Item & Quantity \\\hline
-Widgets & 42 \\
-Gadgets & 13
-\end{tabular}
-\caption{\label{tab:widgets}An example table.}
-\end{table}
-
-\subsection{How to add Comments and Track Changes}
-
-Comments can be added to your project by highlighting some text and clicking ``Add comment'' in the top right of the editor pane. To view existing comments, click on the Review menu in the toolbar above. To reply to a comment, click on the Reply button in the lower right corner of the comment. You can close the Review pane by clicking its name on the toolbar when you're done reviewing for the time being.
-
-Track changes are available on all our \href{https://www.overleaf.com/user/subscription/plans}{premium plans}, and can be toggled on or off using the option at the top of the Review pane. Track changes allow you to keep track of every change made to the document, along with the person making the change.
-
-\subsection{How to add Lists}
-
-You can make lists with automatic numbering \dots
-
-\begin{enumerate}
-\item Like this,
-\item and like this.
-\end{enumerate}
-\dots or bullet points \dots
-\begin{itemize}
-\item Like this,
-\item and like this.
 \end{itemize}
-
-\subsection{How to write Mathematics}
-
-\LaTeX{} is great at typesetting mathematics. Let $X_1, X_2, \ldots, X_n$ be a sequence of independent and identically distributed random variables with $\text{E}[X_i] = \mu$ and $\text{Var}[X_i] = \sigma^2 < \infty$, and let
-\[S_n = \frac{X_1 + X_2 + \cdots + X_n}{n}
-      = \frac{1}{n}\sum_{i}^{n} X_i\]
-denote their mean. Then as $n$ approaches infinity, the random variables $\sqrt{n}(S_n - \mu)$ converge in distribution to a normal $\mathcal{N}(0, \sigma^2)$.
-
-
-\subsection{How to change the margins and paper size}
-
-Usually the template you're using will have the page margins and paper size set correctly for that use-case. For example, if you're using a journal article template provided by the journal publisher, that template will be formatted according to their requirements. In these cases, it's best not to alter the margins directly.
-
-If however you're using a more general template, such as this one, and would like to alter the margins, a common way to do so is via the geometry package. You can find the geometry package loaded in the preamble at the top of this example file, and if you'd like to learn more about how to adjust the settings, please visit this help article on \href{https://www.overleaf.com/learn/latex/page_size_and_margins}{page size and margins}.
-
-\subsection{How to change the document language and spell check settings}
-
-Overleaf supports many different languages, including multiple different languages within one document.
-
-To configure the document language, simply edit the option provided to the babel package in the preamble at the top of this example project. To learn more about the different options, please visit this help article on \href{https://www.overleaf.com/learn/latex/International_language_support}{international language support}.
-
-To change the spell check language, simply open the Overleaf menu at the top left of the editor window, scroll down to the spell check setting, and adjust accordingly.
-
-\subsection{How to add Citations and a References List}
-
-You can simply upload a \verb|.bib| file containing your BibTeX entries, created with a tool such as JabRef. You can then cite entries from it, like this: \cite{greenwade93}. Just remember to specify a bibliography style, as well as the filename of the \verb|.bib|. You can find a \href{https://www.overleaf.com/help/97-how-to-include-a-bibliography-using-bibtex}{video tutorial here} to learn more about BibTeX.
-
-If you have an \href{https://www.overleaf.com/user/subscription/plans}{upgraded account}, you can also import your Mendeley or Zotero library directly as a \verb|.bib| file, via the upload menu in the file-tree.
-
-\subsection{Good luck!}
-
-We hope you find Overleaf useful, and do take a look at our \href{https://www.overleaf.com/learn}{help library} for more tutorials and user guides! Please also let us know if you have any feedback using the \textbf{Contact us} link at the bottom of the Overleaf menu --- or use the contact form at \url{https://www.overleaf.com/contact}.
-
-\bibliographystyle{alpha}
-\bibliography{sample}
 
 \end{document}

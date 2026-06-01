@@ -95,6 +95,15 @@ def parse_first_float(raw: str) -> Optional[float]:
     except ValueError:
         return None
 
+def parse_first_int(raw: str) -> Optional[int]:
+    match = re.search(r"[-+]?\d+", raw)
+    if match is None:
+        return None
+    try:
+        return int(match.group(0))
+    except ValueError:
+        return None
+
 def normalize_state(raw: str) -> str:
     cleaned = raw.strip().upper()
     if cleaned in {"1", "ON", "TRUE"}:
@@ -120,8 +129,14 @@ class PowerSupplyConsoleTester:
             pass
 
         try:
-            identity = self.tap.ps.query("*IDN?")
+            identity = self.tap.ps.query("*IDN?\n")
             print_check("Kapcsolat", True, f"*IDN? -> {identity.strip()}")
+            self.tap.ps.write("*CLS\n")
+            for ch in range(1, 5):
+                answer = self.tap.ps.write(f":MONItor{ch} :STATe?\n")
+                print_check(f"Monitor status Ch{ch}", True, f":MONItor{ch} :STATe? -> {answer.strip()}")
+                if "ON" == answer:
+                    self.tap.ps.write(f":MONItor{ch} :STATe OFF\n")
         except Exception as exc:
             print_check("Kapcsolat", False, str(exc))
             raise
@@ -152,6 +167,50 @@ class PowerSupplyConsoleTester:
         tap = self.require_tap()
         tap.ps.write(command)
         print_check(f"Kiadas: {command}", True, "A parancs elkuldve.")
+
+    def read_questionable_status(self) -> None:
+        tap = self.require_tap()
+        event_raw = tap.ps.query(":STATus:QUEStionable:EVENt?")
+        cond_raw = tap.ps.query(":STATus:QUEStionable:CONDition?")
+        event_val = parse_first_int(event_raw)
+        cond_val = parse_first_int(cond_raw)
+        print_check(
+            "Questionable EVENT",
+            True,
+            f":STATus:QUEStionable:EVENt? -> {event_raw.strip()} ({event_val})",
+        )
+        print_check(
+            "Questionable CONDITION",
+            True,
+            f":STATus:QUEStionable:CONDition? -> {cond_raw.strip()} ({cond_val})",
+        )
+
+    def read_status_queue_next(self) -> str:
+        tap = self.require_tap()
+        raw = tap.ps.query(":STATus:QUEue:NEXT?")
+        print_check("Status queue NEXT", True, raw.strip())
+        return raw
+
+    def list_status_queue(self, max_items: int = 20) -> None:
+        tap = self.require_tap()
+        entries: list[str] = []
+        for _ in range(max_items):
+            raw = tap.ps.query(":STATus:QUEue:NEXT?")
+            value = raw.strip()
+            if value in {"", "0", "+0", "NO ERROR", "No error"}:
+                break
+            entries.append(value)
+
+        if entries:
+            joined = " | ".join(f"{idx + 1}. {entry}" for idx, entry in enumerate(entries))
+            print_check("Status queue lista", True, joined)
+        else:
+            print_check("Status queue lista", True, "Nincs bejegyzes.")
+
+    def clear_status_queue(self) -> None:
+        tap = self.require_tap()
+        tap.ps.write(":STATus:QUEue:CLEar")
+        print_check("Status queue torles", True, ":STATus:QUEue:CLEar elkuldve.")
 
     def verify_voltage(self, channel: int, expected: float, tolerance: float = 0.01) -> None:
         tap = self.require_tap()
@@ -202,6 +261,9 @@ class PowerSupplyConsoleTester:
             tap.ps.write(command)
             print_check(f"Feszultseg kiadas Ch{channel}", True, command)
             self.verify_voltage(channel, voltage)
+            tap.ps.write(f':OUTPut{channel}:STATe ON\n')
+            self.verify_output_state(channel, True)
+        print_check(f"Feszultseg kiadas Ch{channels}", True, command)
 
     def set_output_state(self, channels: Iterable[int], switch_on: bool) -> None:
         tap = self.require_tap()
@@ -264,6 +326,7 @@ class PowerSupplyConsoleTester:
             tap.ps.write(command3)
             command4 = f':OUTPut{ch}:STATe ON\n'
             tap.ps.write(command4)
+            self.verify_output_state(ch, True)
             #tap.turn_channel_on_off(True, all_channels=False, channels=[ch])
         time.sleep(0.5)
         print_check(f"Feszultseg kiadas Ch{channels}", True, command1)
@@ -283,6 +346,10 @@ def print_menu() -> None:
     print("7) Csoportos statusz kiolvasasa")
     print("8) Kijelzo ON/OFF")
     print("9) Nyers SCPI parancs kuldese")
+    print("10) Questionable status olvasas (EVENT + CONDITION)")
+    print("11) Status queue kovetkezo bejegyzes olvasasa (NEXT?)")
+    print("12) Status queue listazasa (NEXT? alapon)")
+    print("13) Status queue torlese (CLEAR)")
     print("0) Kilepes")
 
 def handle_menu_choice(tester: PowerSupplyConsoleTester, choice: str) -> bool:
@@ -319,6 +386,15 @@ def handle_menu_choice(tester: PowerSupplyConsoleTester, choice: str) -> bool:
         else:
             tester.write_raw(command)
             print_check("Nyers parancs", True, "Nincs automatikus visszaellenorzes ehhez a parancshoz.")
+    elif choice == "10":
+        tester.read_questionable_status()
+    elif choice == "11":
+        tester.read_status_queue_next()
+    elif choice == "12":
+        max_items = prompt_int("Maximalis listazando queue elemek", 20, minimum=1, maximum=500)
+        tester.list_status_queue(max_items=max_items)
+    elif choice == "13":
+        tester.clear_status_queue()
     elif choice == "0":
         print_check("Kilepes", True, "Program leall.")
         return False
