@@ -12,7 +12,6 @@ from power_source import PowerSupply
 
 
 # --- MÉRÉSI PARAMÉTEREK ---
-#TAP_ADDRESS = 'tcp://169.254.35.236:1026'
 IDQ_ADDRESS = 'tcp://172.26.34.114:5555'
 TAP_ADDRESSUSB = "ASRL5::INSTR"
 BAUD_RATE = 115200
@@ -144,9 +143,6 @@ class MeasurementController:
         for ch, step in step_map.items():
             #tap.turn_channel_on_off(False, all_channels=False, channels=[ch])
             tap.ps.write(f':SOURce{ch}:VOLTage {step["fesz"]}\n')
-            tap.ps.write(f':SOURce{ch}:APPLy\n')
-            tap.ps.write(f':SOURce{ch}:STATe ON\n')
-            tap.ps.write(f':OUTPut{ch}:STATe ON\n')
             #tap.turn_channel_on_off(True, all_channels=False, channels=[ch])
         time.sleep(0.5)
 
@@ -209,6 +205,8 @@ class MeasurementController:
             if self.leallitas_kerve:
                 if self.log_callback is not None:
                     self.log_callback("Mérés megszakítva a felhasználó által.")
+                    self.restore_tap_outputs(tap)
+                    self.turn_off_tap_channels(tap, selected_channels)
                 break
 
             step_map = self.collect_step_map(selected_channels, step_index)
