@@ -1,0 +1,4 @@
+tedd külön a játékokat egy Bus.py és egy horse_race.py fájlba, de a GUI maradjon ebben a social.py-ban
+
+a laphúzás a horse_race-ben legyen 3 másodpercenként. Vagyis 3 másodpercenként húz automatikusan a rendszer egy új lapot
+
