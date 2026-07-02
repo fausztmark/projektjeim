@@ -1,11 +1,14 @@
 from urllib import response
 
-import zmq
+import re
 import os
+import json
+import csv
+import zmq
 import time
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, filedialog
 from datetime import datetime
 from contextlib import ExitStack
 from power_source import PowerSupply
@@ -16,7 +19,9 @@ IDQ_ADDRESS = 'tcp://172.26.34.114:5555'
 TAP_ADDRESSUSB = "ASRL5::INSTR"
 BAUD_RATE = 115200
 
-output_dir = os.path.join(os.path.dirname(__file__), "meresek")
+output_dir_txt = os.path.join(os.path.dirname(__file__), "meresek_txt")
+output_dir_csv = os.path.join(os.path.dirname(__file__), "meresek_csv")
+settings_dir = os.path.join(os.path.dirname(__file__), "beallitasok")
 LEPES_IDO = 5  #s
 RESTORE_MEMORY_REGISTER = 1
 
@@ -31,7 +36,6 @@ class ZMQInstrument:
 
     def test_connection(self):
         """Teszteli a kapcsolatot egy egyszerű query paranccsal."""
-        return True, "Válasz érkezett!"
         try:
             self._sock.send_string("*IDN?")
             response = self._sock.recv_string()
@@ -43,6 +47,10 @@ class ZMQInstrument:
             return False, "Timeout: az eszköz nem válaszol (időtúllépés)."
         except Exception as e:
             return False, f"Kapcsolati hiba: {str(e)}"
+
+    def query(self, cmd: str) -> str:
+        self._sock.send_string(cmd)
+        return self._sock.recv_string()
 
     def write(self, cmd: str):
         try:
@@ -69,7 +77,8 @@ class MeasurementController:
         self.idq_address = idq_address
         self.tap_address = tap_address
         self.baud_rate = BAUD_RATE
-        self.output_dir = output_dir
+        self.output_dir_txt = output_dir_txt
+        self.output_dir_csv = output_dir_csv
         self.step_time = step_time
         self.channel_steps = step_definitions or {}
         self.log_callback = log_callback
@@ -146,24 +155,45 @@ class MeasurementController:
             #tap.turn_channel_on_off(True, all_channels=False, channels=[ch])
         time.sleep(0.5)
 
-    def write_measurement_samples(self, t_c, selected_channels, all_file_handle, channel_file_handles):
-        csatorna_szamlalok = self.sample_channels(t_c, selected_channels)
+    def write_measurement_samples(
+        self,
+        t_c,
+        tap,
+        selected_channels,
+        all_file_handle,
+        all_csv_writer,
+        channel_file_handles,
+        channel_csv_writers,
+    ):
+        csatorna_szamlalok, csatorna_aramok_ma = self.sample_channels(t_c, tap, selected_channels)
         timestamp = time.strftime('%Y.%m.%d. %H:%M:%S')
-        counter_str = ' '.join([f"Ch{ch}:{csatorna_szamlalok[ch]:,}".replace(',', '.') for ch in selected_channels])
+        counter_str = ' '.join(
+            [
+                f"Ch{ch}:{csatorna_szamlalok[ch]:,} --- {csatorna_aramok_ma[ch]:.3f} mA".replace(',', '.')
+                for ch in selected_channels
+            ]
+        )
         log_line = f"{timestamp} --- {counter_str}"
 
         if self.log_callback is not None:
             self.log_callback(log_line)
         all_file_handle.write(log_line + "\n")
         all_file_handle.flush()
+        for ch in selected_channels:
+            all_csv_writer.writerow([timestamp, ch, csatorna_szamlalok[ch], f"{csatorna_aramok_ma[ch]:.3f}"])
 
         for ch in selected_channels:
-            ch_line = f"{timestamp} --- CH{ch}: {csatorna_szamlalok[ch]:,}".replace(',', '.')
+            ch_line = (
+                f"{timestamp} --- CH{ch}: {csatorna_szamlalok[ch]:,} --- {csatorna_aramok_ma[ch]:.3f} mA"
+                .replace(',', '.')
+            )
             channel_file_handles[ch].write(ch_line + "\n")
             channel_file_handles[ch].flush()
+            channel_csv_writers[ch].writerow([timestamp, csatorna_szamlalok[ch], f"{csatorna_aramok_ma[ch]:.3f}"])
 
-    def sample_channels(self, idq_card, selected_channels):
+    def sample_channels(self, idq_card, tap, selected_channels):
         csatorna_szamlalok = {}
+        csatorna_aramok_ma = {}
         for ch in selected_channels:
             try:
                 idq_card._sock.send_string(f'INPUt{ch}:COUNter?')
@@ -172,7 +202,26 @@ class MeasurementController:
             except Exception:
                 n = 0
             csatorna_szamlalok[ch] = n
-        return csatorna_szamlalok
+
+            try:
+                raw_current = tap.query(f':SOURce{ch}:CURRent?')
+                current_a = self.parse_first_float(raw_current)
+                current_ma = 0.0 if current_a is None else current_a * 1000.0
+            except Exception:
+                current_ma = 0.0
+            csatorna_aramok_ma[ch] = current_ma
+
+        return csatorna_szamlalok, csatorna_aramok_ma
+
+    @staticmethod
+    def parse_first_float(raw: str):
+        match = re.search(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", raw)
+        if match is None:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
 
     def restore_tap_outputs(self, tapegyseg):
         try:
@@ -198,7 +247,16 @@ class MeasurementController:
             if self.log_callback is not None:
                 self.log_callback(f"Hiba a tápegység csatornáinak kikapcsolása közben: {exc}")
 
-    def process_measurement_steps(self, tap, t_c, selected_channels, all_file_handle, channel_file_handles):
+    def process_measurement_steps(
+        self,
+        tap,
+        t_c,
+        selected_channels,
+        all_file_handle,
+        all_csv_writer,
+        channel_file_handles,
+        channel_csv_writers,
+    ):
         max_steps = self.get_max_step_count(selected_channels)
 
         for step_index in range(max_steps):
@@ -222,7 +280,15 @@ class MeasurementController:
                 if self.leallitas_kerve:
                     break
 
-                self.write_measurement_samples(t_c, selected_channels, all_file_handle, channel_file_handles)
+                self.write_measurement_samples(
+                    t_c,
+                    tap,
+                    selected_channels,
+                    all_file_handle,
+                    all_csv_writer,
+                    channel_file_handles,
+                    channel_csv_writers,
+                )
 
                 time.sleep(1)
 
@@ -280,27 +346,41 @@ class MeasurementController:
             if self.log_callback is not None:
                 self.log_callback("Műszerek készen állnak. Kimenetek BE.")
 
-            os.makedirs(self.output_dir, exist_ok=True)
+            os.makedirs(self.output_dir_txt, exist_ok=True)
+            os.makedirs(self.output_dir_csv, exist_ok=True)
 
-            all_file_path, channel_file_paths = self.build_output_paths(selected_channels)
+            all_file_path, all_csv_path, channel_file_paths, channel_csv_paths = self.build_output_paths(selected_channels)
 
             with ExitStack() as stack:
                 all_file_handle = stack.enter_context(open(all_file_path, 'w', encoding='utf-8', buffering=1))
+                all_csv_handle = stack.enter_context(open(all_csv_path, 'w', encoding='utf-8', newline=''))
+                all_csv_writer = csv.writer(all_csv_handle, delimiter=';')
+                all_csv_writer.writerow(['datum', 'csatorna', 'beutes', 'aram_mA'])
                 channel_file_handles = {ch: stack.enter_context(open(path, 'w', encoding='utf-8', buffering=1)) for ch, path in channel_file_paths.items()}
+                channel_csv_writers = {}
+                for ch, path in channel_csv_paths.items():
+                    handle = stack.enter_context(open(path, 'w', encoding='utf-8', newline=''))
+                    writer = csv.writer(handle, delimiter=';')
+                    writer.writerow(['datum', 'beutes', 'aram_mA'])
+                    channel_csv_writers[ch] = writer
 
                 self.process_measurement_steps(
                     tap,
                     t_c,
                     selected_channels,
                     all_file_handle,
+                    all_csv_writer,
                     channel_file_handles,
+                    channel_csv_writers,
                 )
 
             if self.log_callback is not None:
                 self.log_callback(f"Összesített fájl: {all_file_path}")
+                self.log_callback(f"Összesített CSV: {all_csv_path}")
             for ch in selected_channels:
                 if self.log_callback is not None:
                     self.log_callback(f"Csatornafájl Ch{ch}: {channel_file_paths[ch]}")
+                    self.log_callback(f"Csatorna CSV Ch{ch}: {channel_csv_paths[ch]}")
 
             if self.log_callback is not None:
                 self.log_callback("\n--- Mérés vége. Visszaállás az 1-es memóriaregiszterből. ---")
@@ -334,12 +414,17 @@ class MeasurementController:
 
     def build_output_paths(self, selected_channels):
         meres_ido = datetime.now().strftime("%Y.%m.%d_%H.%M")
-        all_file_path = os.path.join(self.output_dir, f"{meres_ido}_meres.txt")
+        all_file_path = os.path.join(self.output_dir_txt, f"{meres_ido}_meres.txt")
+        all_csv_path = os.path.join(self.output_dir_csv, f"{meres_ido}_meres.csv")
         channel_file_paths = {
-            ch: os.path.join(self.output_dir, f"{meres_ido}_CH{ch}_meres.txt")
+            ch: os.path.join(self.output_dir_txt, f"{meres_ido}_CH{ch}_meres.txt")
             for ch in selected_channels
         }
-        return all_file_path, channel_file_paths
+        channel_csv_paths = {
+            ch: os.path.join(self.output_dir_csv, f"{meres_ido}_CH{ch}_meres.csv")
+            for ch in selected_channels
+        }
+        return all_file_path, all_csv_path, channel_file_paths, channel_csv_paths
 
 class SNSPDControlGUI:
     def __init__(self, root):
@@ -353,6 +438,8 @@ class SNSPDControlGUI:
         self.csatorna_valtozok = []
         self.channel_frames = {}
         self.channel_param_vars = {}
+        self.channel_sync_vars = {}
+        self._sync_update_guard = False
         for i in range(4):
             var = tk.IntVar(value=1)
             cb = tk.Checkbutton(csatorna_keret, text=f"Ch{i+1}", variable=var)
@@ -364,6 +451,15 @@ class SNSPDControlGUI:
         self.channel_config_container.pack(fill=tk.X, padx=10, pady=10)
         for i in range(1, 5):
             self.create_channel_config_block(i)
+
+        self.settings_bar = tk.Frame(root)
+        self.settings_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
+        tk.Label(self.settings_bar, text="Mentés neve:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        self.settings_name_var = tk.StringVar(value="meresi_beallitas")
+        self.settings_name_entry = tk.Entry(self.settings_bar, textvariable=self.settings_name_var, width=28)
+        self.settings_name_entry.pack(side=tk.LEFT, padx=(0, 10))
+        tk.Button(self.settings_bar, text="Beállítás mentése", command=self.save_settings).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.settings_bar, text="Beállítás betöltése", command=self.load_settings).pack(side=tk.LEFT, padx=5)
 
         self.inditas_gomb = tk.Button(root, text="Mérés Indítása", command=self.start_thread, bg="green", fg="white", font=("Arial", 12))
         self.inditas_gomb.pack(pady=5)
@@ -378,7 +474,7 @@ class SNSPDControlGUI:
         self.controller = MeasurementController(
             idq_address=IDQ_ADDRESS,
             tap_address=TAP_ADDRESSUSB,
-            output_dir=output_dir,
+            output_dir=output_dir_txt,
             step_time=LEPES_IDO,
             log_callback=lambda message: self.root.after(0, lambda: (self.naplo_terulet.insert(tk.END, message + "\n"), self.naplo_terulet.see(tk.END))),
             on_finished=lambda: self.root.after(0, lambda: (
@@ -398,6 +494,12 @@ class SNSPDControlGUI:
         frame = tk.LabelFrame(self.channel_config_container, text=f"Ch{ch} beállítások", padx=8, pady=6)
         frame.pack(fill=tk.X, pady=5)
 
+        sync_var = tk.IntVar(value=0)
+        self.channel_sync_vars[ch] = sync_var
+        sync_row = tk.Frame(frame)
+        sync_row.pack(fill=tk.X, pady=(0, 6))
+        tk.Checkbutton(sync_row, text="Beállítások szinkronizálása", variable=sync_var).pack(anchor=tk.W)
+
         values = {
             'fesz_min': tk.StringVar(value="1.0"),
             'fesz_max': tk.StringVar(value="1.2"),
@@ -408,6 +510,14 @@ class SNSPDControlGUI:
         }
         self.channel_frames[ch] = frame
         self.channel_param_vars[ch] = values
+
+        for key, value_var in values.items():
+            value_var.trace_add(
+                "write",
+                lambda *_args, source_ch=ch, source_key=key: self.on_channel_param_changed(source_ch, source_key),
+            )
+
+        sync_var.trace_add("write", lambda *_args, source_ch=ch: self.on_channel_sync_toggle(source_ch))
 
         params = [
             ("Feszültség (V)", 'fesz_min', 'fesz_max', 'fesz_step'),
@@ -425,6 +535,135 @@ class SNSPDControlGUI:
             tk.Entry(values_frame, width=6, textvariable=values[max_key]).pack(side=tk.LEFT, padx=2)
             tk.Label(values_frame, text="Lépés:", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
             tk.Entry(values_frame, width=6, textvariable=values[step_key]).pack(side=tk.LEFT, padx=2)
+
+    def get_synced_channels(self):
+        return [ch for ch, var in self.channel_sync_vars.items() if var.get()]
+
+    def on_channel_sync_toggle(self, source_ch):
+        if self._sync_update_guard:
+            return
+
+        sync_var = self.channel_sync_vars.get(source_ch)
+        if sync_var is None or not sync_var.get():
+            return
+
+        synced_channels = self.get_synced_channels()
+        source_values = self.channel_param_vars.get(source_ch, {})
+        if len(synced_channels) <= 1 or not source_values:
+            return
+
+        self._sync_update_guard = True
+        try:
+            reference_ch = next((ch for ch in synced_channels if ch != source_ch), None)
+            if reference_ch is None:
+                return
+            self.copy_channel_values(reference_ch, source_ch)
+        finally:
+            self._sync_update_guard = False
+
+    def on_channel_param_changed(self, source_ch, source_key):
+        if self._sync_update_guard:
+            return
+
+        synced_channels = self.get_synced_channels()
+        if source_ch not in synced_channels or len(synced_channels) <= 1:
+            return
+
+        source_value = self.channel_param_vars[source_ch][source_key].get()
+        self._sync_update_guard = True
+        try:
+            for target_ch in synced_channels:
+                if target_ch == source_ch:
+                    continue
+                self.channel_param_vars[target_ch][source_key].set(source_value)
+        finally:
+            self._sync_update_guard = False
+
+    def copy_channel_values(self, source_ch, target_ch):
+        source_values = self.channel_param_vars[source_ch]
+        target_values = self.channel_param_vars[target_ch]
+        for key, value_var in source_values.items():
+            target_values[key].set(value_var.get())
+
+    def sanitize_settings_name(self, raw_name):
+        cleaned = raw_name.strip()
+        cleaned = re.sub(r'[<>:"/|?*]', "_", cleaned)
+        cleaned = re.sub(r"\s+", "_", cleaned)
+        cleaned = cleaned.strip("._")
+        return cleaned or "meresi_beallitas"
+
+    def get_settings_file_path(self, raw_name):
+        safe_name = self.sanitize_settings_name(raw_name)
+        if not safe_name.lower().endswith(".json"):
+            safe_name += ".json"
+        return os.path.join(settings_dir, safe_name)
+
+    def collect_settings_data(self):
+        return {
+            "settings_name": self.settings_name_var.get().strip(),
+            "selected_channels": [i + 1 for i, var in enumerate(self.csatorna_valtozok) if var.get()],
+            "sync_channels": [ch for ch, var in self.channel_sync_vars.items() if var.get()],
+            "channels": {
+                str(ch): {key: value_var.get() for key, value_var in values.items()}
+                for ch, values in self.channel_param_vars.items()
+            },
+        }
+
+    def apply_settings_data(self, data):
+        channels = data.get("channels", {})
+        selected_channels = set(data.get("selected_channels", []))
+        sync_channels = set(data.get("sync_channels", []))
+
+        self._sync_update_guard = True
+        try:
+            for index, var in enumerate(self.csatorna_valtozok, start=1):
+                var.set(1 if index in selected_channels else 0)
+                self.toggle_channel_config_visibility(index)
+
+            for ch, sync_var in self.channel_sync_vars.items():
+                sync_var.set(1 if ch in sync_channels else 0)
+
+            for ch_str, values in channels.items():
+                ch = int(ch_str)
+                if ch not in self.channel_param_vars:
+                    continue
+                for key, value in values.items():
+                    if key in self.channel_param_vars[ch]:
+                        self.channel_param_vars[ch][key].set(value)
+        finally:
+            self._sync_update_guard = False
+
+    def save_settings(self):
+        try:
+            os.makedirs(settings_dir, exist_ok=True)
+            settings_data = self.collect_settings_data()
+            file_path = self.get_settings_file_path(self.settings_name_var.get())
+            with open(file_path, "w", encoding="utf-8") as file_handle:
+                json.dump(settings_data, file_handle, ensure_ascii=False, indent=2)
+            messagebox.showinfo("Mentés kész", f"A beállítás elmentve ide:\n{file_path}")
+        except Exception as exc:
+            messagebox.showerror("Mentési hiba", str(exc))
+
+    def load_settings(self):
+        try:
+            os.makedirs(settings_dir, exist_ok=True)
+            file_path = filedialog.askopenfilename(
+                title="Beállítás betöltése",
+                initialdir=settings_dir,
+                filetypes=(("JSON fájlok", "*.json"), ("Minden fájl", "*.*")),
+            )
+            if not file_path:
+                return
+
+            with open(file_path, "r", encoding="utf-8") as file_handle:
+                data = json.load(file_handle)
+
+            self.apply_settings_data(data)
+            loaded_name = data.get("settings_name") or os.path.splitext(os.path.basename(file_path))[0]
+            self.settings_name_var.set(loaded_name)
+            messagebox.showinfo("Betöltés kész", f"A beállítás betöltve innen:\n{file_path}")
+        except Exception as exc:
+            messagebox.showerror("Betöltési hiba", str(exc))
 
     def toggle_channel_config_visibility(self, ch):
         frame = self.channel_frames.get(ch)

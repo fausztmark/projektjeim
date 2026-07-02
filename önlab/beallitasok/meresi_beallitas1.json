@@ -1,0 +1,48 @@
+{
+  "settings_name": "meresi_beallitas1",
+  "selected_channels": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "sync_channels": [
+    2,
+    3,
+    4
+  ],
+  "channels": {
+    "1": {
+      "fesz_min": "2",
+      "fesz_max": "4",
+      "fesz_step": "0.005",
+      "db_min": "10",
+      "db_max": "15",
+      "db_step": "2"
+    },
+    "2": {
+      "fesz_min": "2",
+      "fesz_max": "5",
+      "fesz_step": "0.005",
+      "db_min": "10",
+      "db_max": "15",
+      "db_step": "2"
+    },
+    "3": {
+      "fesz_min": "2",
+      "fesz_max": "5",
+      "fesz_step": "0.005",
+      "db_min": "10",
+      "db_max": "15",
+      "db_step": "2"
+    },
+    "4": {
+      "fesz_min": "2",
+      "fesz_max": "5",
+      "fesz_step": "0.005",
+      "db_min": "10",
+      "db_max": "15",
+      "db_step": "2"
+    }
+  }
+}
