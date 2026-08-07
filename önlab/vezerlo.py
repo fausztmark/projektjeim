@@ -24,6 +24,7 @@ output_dir_csv = os.path.join(os.path.dirname(__file__), "meresek_csv")
 settings_dir = os.path.join(os.path.dirname(__file__), "beallitasok")
 LEPES_IDO = 5  #s
 RESTORE_MEMORY_REGISTER = 1
+COUNT_REVERT_THRESHOLD = 10_000_000
 
 class ZMQInstrument:
     def __init__(self, context, address, timeout_ms=5000):
@@ -191,6 +192,8 @@ class MeasurementController:
             channel_file_handles[ch].flush()
             channel_csv_writers[ch].writerow([timestamp, csatorna_szamlalok[ch], f"{csatorna_aramok_ma[ch]:.3f}"])
 
+        return csatorna_szamlalok, csatorna_aramok_ma
+
     def sample_channels(self, idq_card, tap, selected_channels):
         csatorna_szamlalok = {}
         csatorna_aramok_ma = {}
@@ -212,6 +215,18 @@ class MeasurementController:
             csatorna_aramok_ma[ch] = current_ma
 
         return csatorna_szamlalok, csatorna_aramok_ma
+
+    def revert_channel_to_safe_voltage(self, tap, channel, safe_step):
+        try:
+            tap.ps.write(f':SOURce{channel}:VOLTage {safe_step["fesz"]}\n')
+            time.sleep(0.1)
+            if self.log_callback is not None:
+                self.log_callback(
+                    f"Ch{channel} 10 000 000 fölé ment, visszaállás az előző biztonságos feszültségre: {safe_step['fesz']} V"
+                )
+        except Exception as exc:
+            if self.log_callback is not None:
+                self.log_callback(f"Hiba Ch{channel} visszaállítása közben: {exc}")
 
     @staticmethod
     def parse_first_float(raw: str):
@@ -258,6 +273,8 @@ class MeasurementController:
         channel_csv_writers,
     ):
         max_steps = self.get_max_step_count(selected_channels)
+        frozen_channels = set()
+        last_safe_steps = {}
 
         for step_index in range(max_steps):
             if self.leallitas_kerve:
@@ -267,7 +284,23 @@ class MeasurementController:
                     self.turn_off_tap_channels(tap, selected_channels)
                 break
 
-            step_map = self.collect_step_map(selected_channels, step_index)
+            step_map = {}
+            current_step_indices = {}
+            for ch in selected_channels:
+                if ch in frozen_channels:
+                    safe_step = last_safe_steps.get(ch)
+                    if safe_step is not None:
+                        step_map[ch] = safe_step
+                    continue
+
+                steps = self.channel_steps.get(ch, [])
+                if not steps:
+                    continue
+                effective_index = min(step_index, len(steps) - 1)
+                current_step_indices[ch] = effective_index
+                step = steps[effective_index]
+                step_map[ch] = step
+                last_safe_steps[ch] = step
 
             if not step_map:
                 break
@@ -280,7 +313,7 @@ class MeasurementController:
                 if self.leallitas_kerve:
                     break
 
-                self.write_measurement_samples(
+                csatorna_szamlalok, _csatorna_aramok_ma = self.write_measurement_samples(
                     t_c,
                     tap,
                     selected_channels,
@@ -289,6 +322,28 @@ class MeasurementController:
                     channel_file_handles,
                     channel_csv_writers,
                 )
+
+                breached_channels = [
+                    ch for ch in selected_channels
+                    if csatorna_szamlalok.get(ch, 0) > COUNT_REVERT_THRESHOLD
+                ]
+                for ch in breached_channels:
+                    if ch in frozen_channels:
+                        continue
+
+                    safe_step = last_safe_steps.get(ch)
+                    if safe_step is None:
+                        if self.log_callback is not None:
+                            self.log_callback(
+                                f"Ch{ch} átlépte a 10 000 000-es határt, de nincs korábbi biztonságos feszültség."
+                            )
+                        continue
+
+                    frozen_channels.add(ch)
+                    self.revert_channel_to_safe_voltage(tap, ch, safe_step)
+                    self.write_step_header(channel_file_handles[ch], safe_step['fesz'], safe_step['db'])
+                    step_map[ch] = safe_step
+                    current_step_indices[ch] = current_step_indices.get(ch, 0)
 
                 time.sleep(1)
 
@@ -437,8 +492,10 @@ class SNSPDControlGUI:
         csatorna_keret.pack(pady=5)
         self.csatorna_valtozok = []
         self.channel_frames = {}
+        self.channel_attenuator_rows = {}
         self.channel_param_vars = {}
         self.channel_sync_vars = {}
+        self.channel_attenuator_vars = {}
         self._sync_update_guard = False
         for i in range(4):
             var = tk.IntVar(value=1)
@@ -495,10 +552,13 @@ class SNSPDControlGUI:
         frame.pack(fill=tk.X, pady=5)
 
         sync_var = tk.IntVar(value=0)
+        attenuator_var = tk.IntVar(value=0)
         self.channel_sync_vars[ch] = sync_var
+        self.channel_attenuator_vars[ch] = attenuator_var
         sync_row = tk.Frame(frame)
         sync_row.pack(fill=tk.X, pady=(0, 6))
         tk.Checkbutton(sync_row, text="Beállítások szinkronizálása", variable=sync_var).pack(anchor=tk.W)
+        tk.Checkbutton(sync_row, text="Csillapító vezérlése", variable=attenuator_var).pack(anchor=tk.W)
 
         values = {
             'fesz_min': tk.StringVar(value="1.0"),
@@ -518,10 +578,10 @@ class SNSPDControlGUI:
             )
 
         sync_var.trace_add("write", lambda *_args, source_ch=ch: self.on_channel_sync_toggle(source_ch))
+        attenuator_var.trace_add("write", lambda *_args, source_ch=ch: self.toggle_channel_attenuator_visibility(source_ch))
 
         params = [
             ("Feszültség (V)", 'fesz_min', 'fesz_max', 'fesz_step'),
-            ("Csillapítás (dB)", 'db_min', 'db_max', 'db_step'),
         ]
         for label, min_key, max_key, step_key in params:
             param_frame = tk.Frame(frame)
@@ -535,6 +595,21 @@ class SNSPDControlGUI:
             tk.Entry(values_frame, width=6, textvariable=values[max_key]).pack(side=tk.LEFT, padx=2)
             tk.Label(values_frame, text="Lépés:", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
             tk.Entry(values_frame, width=6, textvariable=values[step_key]).pack(side=tk.LEFT, padx=2)
+
+        attenuator_row = tk.Frame(frame)
+        self.channel_attenuator_rows[ch] = attenuator_row
+        attenuator_row.pack(fill=tk.X, padx=10, pady=(6, 2))
+        tk.Label(attenuator_row, text="Csillapítás (dB)", font=("Arial", 9)).pack()
+        attenuator_values_frame = tk.Frame(attenuator_row)
+        attenuator_values_frame.pack()
+        tk.Label(attenuator_values_frame, text="Min:", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Entry(attenuator_values_frame, width=6, textvariable=values['db_min']).pack(side=tk.LEFT, padx=2)
+        tk.Label(attenuator_values_frame, text="Max:", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Entry(attenuator_values_frame, width=6, textvariable=values['db_max']).pack(side=tk.LEFT, padx=2)
+        tk.Label(attenuator_values_frame, text="Lépés:", font=("Arial", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Entry(attenuator_values_frame, width=6, textvariable=values['db_step']).pack(side=tk.LEFT, padx=2)
+
+        self.toggle_channel_attenuator_visibility(ch)
 
     def get_synced_channels(self):
         return [ch for ch, var in self.channel_sync_vars.items() if var.get()]
@@ -603,6 +678,7 @@ class SNSPDControlGUI:
             "settings_name": self.settings_name_var.get().strip(),
             "selected_channels": [i + 1 for i, var in enumerate(self.csatorna_valtozok) if var.get()],
             "sync_channels": [ch for ch, var in self.channel_sync_vars.items() if var.get()],
+            "attenuator_channels": [ch for ch, var in self.channel_attenuator_vars.items() if var.get()],
             "channels": {
                 str(ch): {key: value_var.get() for key, value_var in values.items()}
                 for ch, values in self.channel_param_vars.items()
@@ -613,6 +689,7 @@ class SNSPDControlGUI:
         channels = data.get("channels", {})
         selected_channels = set(data.get("selected_channels", []))
         sync_channels = set(data.get("sync_channels", []))
+        attenuator_channels = set(data.get("attenuator_channels", []))
 
         self._sync_update_guard = True
         try:
@@ -622,6 +699,10 @@ class SNSPDControlGUI:
 
             for ch, sync_var in self.channel_sync_vars.items():
                 sync_var.set(1 if ch in sync_channels else 0)
+
+            for ch, attenuator_var in self.channel_attenuator_vars.items():
+                attenuator_var.set(1 if ch in attenuator_channels else 0)
+                self.toggle_channel_attenuator_visibility(ch)
 
             for ch_str, values in channels.items():
                 ch = int(ch_str)
@@ -677,8 +758,25 @@ class SNSPDControlGUI:
 
         if selected:
             frame.pack(fill=tk.X, pady=5)
+            self.toggle_channel_attenuator_visibility(ch)
         else:
             frame.pack_forget()
+
+    def toggle_channel_attenuator_visibility(self, ch):
+        row = self.channel_attenuator_rows.get(ch)
+        attenuator_var = self.channel_attenuator_vars.get(ch)
+        if row is None or attenuator_var is None:
+            return
+
+        try:
+            selected = bool(self.csatorna_valtozok[ch - 1].get())
+        except Exception:
+            selected = False
+
+        if selected and attenuator_var.get():
+            row.pack(fill=tk.X, padx=10, pady=(6, 2))
+        else:
+            row.pack_forget()
 
     def generate_values(self, min_v, max_v, step_v):
         if step_v <= 0:
@@ -701,6 +799,8 @@ class SNSPDControlGUI:
         channel_steps = {}
         for ch in selected_channels:
             values = self.channel_param_vars[ch]
+            attenuator_var = self.channel_attenuator_vars.get(ch)
+            attenuator_enabled = bool(attenuator_var.get()) if attenuator_var is not None else False
 
             v_min = float(values['fesz_min'].get())
             v_max = float(values['fesz_max'].get())
@@ -712,13 +812,18 @@ class SNSPDControlGUI:
 
             v_values = self.generate_values(v_min, v_max, v_step)
             db_values = self.generate_values(db_min, db_max, db_step)
-
-            count = max(len(v_values), len(db_values))
             steps = []
-            for i in range(count):
-                v = v_values[min(i, len(v_values) - 1)]
-                db = db_values[min(i, len(db_values) - 1)]
-                steps.append({'fesz': v, 'db': db})
+
+            if attenuator_enabled:
+                for voltage in v_values:
+                    for db in db_values:
+                        steps.append({'fesz': voltage, 'db': db})
+            else:
+                count = max(len(v_values), len(db_values))
+                for i in range(count):
+                    v = v_values[min(i, len(v_values) - 1)]
+                    db = db_values[min(i, len(db_values) - 1)]
+                    steps.append({'fesz': v, 'db': db})
 
             channel_steps[ch] = steps
 
