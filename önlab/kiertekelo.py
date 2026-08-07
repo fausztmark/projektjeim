@@ -17,6 +17,7 @@ from tkinter import messagebox
 try:
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
+    from matplotlib.ticker import MaxNLocator, ScalarFormatter
 except ImportError as exc:  # pragma: no cover - runtime dependency guard
     raise SystemExit(
         "A matplotlib nincs telepítve. Telepítsd, majd futtasd újra a kiertekelo.py-t."
@@ -28,6 +29,7 @@ AXIS_VOLTAGE = "Feszültség (V)"
 AXIS_COUNT = "Beütés"
 AXIS_CURRENT = "Áram (mA)"
 LEGEND_CHANNELS = "Csatornák"
+METADATA_FILE_NAME = "metaadat.csv"
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,13 @@ class ChannelData:
 class MeasurementGroup:
     prefix: str
     channels: list[ChannelData]
+
+
+@dataclass(frozen=True)
+class MeasurementMetadata:
+    prefix: str
+    measurement_name: str
+    comment: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +103,83 @@ def resolve_output_dir(meresek_csv_dir: Path, explicit_dir: Optional[str]) -> Pa
     if explicit_dir is not None:
         return Path(explicit_dir).expanduser().resolve()
     return meresek_csv_dir / "kiertekelesek"
+
+
+def resolve_metadata_path(base_dir: Path) -> Path:
+    return base_dir / METADATA_FILE_NAME
+
+
+def load_measurement_metadata(metadata_path: Path) -> dict[str, MeasurementMetadata]:
+    if not metadata_path.exists():
+        return {}
+
+    metadata_by_prefix: dict[str, MeasurementMetadata] = {}
+    with metadata_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter=";")
+        for row_index, row in enumerate(reader):
+            if not row:
+                continue
+
+            if row_index == 0 and len(row) >= 2 and row[0].strip().lower() == "mérés neve":
+                continue
+
+            if len(row) < 3:
+                continue
+
+            measurement_name = row[0].strip()
+            prefix = row[1].strip()
+            comment = row[-1].strip() if row[-1].strip() else ""
+            if not prefix:
+                continue
+
+            metadata_by_prefix[prefix] = MeasurementMetadata(
+                prefix=prefix,
+                measurement_name=measurement_name,
+                comment=comment,
+            )
+
+    return metadata_by_prefix
+
+
+def resolve_measurement_title(selected_group: MeasurementGroup, metadata_by_prefix: dict[str, MeasurementMetadata]) -> str:
+    metadata = metadata_by_prefix.get(selected_group.prefix)
+    if metadata is None or not metadata.measurement_name:
+        return selected_group.prefix.replace("_", " ")
+    return metadata.measurement_name
+
+
+def sanitize_title_token(value: str) -> str:
+    return re.sub(r"\s+", "_", value.strip())
+
+
+def sanitize_filename_token(value: str) -> str:
+    sanitized = re.sub(r"[<>:\"/\\|?*]", "_", value.strip())
+    sanitized = re.sub(r"\s+", "_", sanitized)
+    return re.sub(r"_+", "_", sanitized)
+
+
+def resolve_measurement_timestamp(prefix: str) -> str:
+    if "_" not in prefix:
+        return prefix
+
+    date_part, time_part = prefix.split("_", 1)
+    return f"{date_part} {time_part.replace('.', ':')}"
+
+
+def format_diagram_type(diagram_type: str) -> str:
+    return diagram_type.replace("_", " ")
+
+
+def build_diagram_title(measurement_name: str, diagram_type: str, measurement_timestamp: str) -> str:
+    return f"{measurement_name} - {format_diagram_type(diagram_type)} - {measurement_timestamp}"
+
+
+def build_diagram_file_name(measurement_name: str, diagram_type: str, measurement_timestamp: str) -> str:
+    return (
+        f"{sanitize_filename_token(measurement_name)}_-_"
+        f"{sanitize_filename_token(diagram_type)}_-_"
+        f"{sanitize_filename_token(measurement_timestamp)}.png"
+    )
 
 
 def discover_measurement_groups(meresek_txt_dir: Path, meresek_csv_dir: Path) -> list[MeasurementGroup]:
@@ -222,6 +308,17 @@ def parse_voltage_from_header(line: str) -> Optional[float]:
         return None
 
 
+def parse_integer_with_thousands_separator(raw_value: str) -> Optional[int]:
+    cleaned_value = raw_value.strip().replace(".", "").replace(",", "")
+    if not re.fullmatch(r"[-+]?\d+", cleaned_value):
+        return None
+
+    try:
+        return int(cleaned_value)
+    except ValueError:
+        return None
+
+
 def parse_measurement_txt(txt_path: Path) -> list[tuple[float, int]]:
     records: list[tuple[float, int]] = []
     current_voltage: Optional[float] = None
@@ -240,14 +337,12 @@ def parse_measurement_txt(txt_path: Path) -> list[tuple[float, int]]:
             if current_voltage is None:
                 continue
 
-            match = re.search(r"CH\d+:\s*([-+]?\d+(?:[.,]\d+)?)", line)
+            match = re.search(r"CH\d+:\s*([-+]?\d[\d.,]*)", line)
             if match is None:
                 continue
 
-            count_raw = match.group(1).replace(",", ".")
-            try:
-                count_value = int(float(count_raw))
-            except ValueError:
+            count_value = parse_integer_with_thousands_separator(match.group(1))
+            if count_value is None:
                 continue
 
             records.append((current_voltage, count_value))
@@ -344,11 +439,87 @@ def prepare_channel_palette(channels: list[int]) -> dict[int, str]:
     return {channel: cmap(index % 10) for index, channel in enumerate(sorted(channels))}
 
 
+def determine_voltage_tick_decimals(voltages: list[float]) -> int:
+    unique_voltages = sorted(set(voltages))
+    if len(unique_voltages) < 2:
+        return 2
+
+    min_step = min(
+        b - a
+        for a, b in zip(unique_voltages, unique_voltages[1:])
+        if b - a > 0
+    )
+    if min_step >= 1:
+        return 0
+    if min_step >= 0.1:
+        return 1
+    return 2
+
+
+def format_voltage_tick(value: float, decimals: int) -> str:
+    return f"{value:.{decimals}f}"
+
+
+def is_whole_or_half(value: float) -> bool:
+    scaled = round(value * 2)
+    return abs(value * 2 - scaled) < 1e-9
+
+
+def style_voltage_tick_labels(tick_labels, tick_values: list[float]) -> None:
+    for tick_label, tick_value in zip(tick_labels, tick_values):
+        if is_whole_or_half(tick_value):
+            tick_label.set_fontweight("semibold")
+            tick_label.set_fontsize(tick_label.get_fontsize() + 2)
+            x_position, y_position = tick_label.get_position()
+            tick_label.set_position((x_position, y_position - 0.03))
+
+
+def set_voltage_axis_ticks(ax, voltages: list[float]) -> None:
+    if not voltages:
+        return
+
+    decimals = determine_voltage_tick_decimals(voltages)
+    unique_voltages = sorted(set(voltages))
+    ax.set_xticks(unique_voltages)
+    tick_labels = ax.set_xticklabels([format_voltage_tick(voltage, decimals) for voltage in unique_voltages])
+    style_voltage_tick_labels(tick_labels, unique_voltages)
+
+
 def annotate_axis(ax, xlabel: str, ylabel: str, title: str) -> None:
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.25)
+
+
+def prepare_log_count_axis(ax, count_values: list[float]) -> float:
+    positive_values = [value for value in count_values if value > 0]
+    lowest_positive = min(positive_values) if positive_values else 1.0
+    floor_value = max(1.0, lowest_positive / 10.0)
+    highest_value = max(max(count_values), lowest_positive) if count_values else 1.0
+
+    ax.set_yscale("log", base=10, nonpositive="clip")
+    ax.set_ylim(bottom=floor_value, top=max(highest_value * 1.25, floor_value * 10))
+
+    formatter = ScalarFormatter()
+    formatter.set_scientific(False)
+    formatter.set_useOffset(False)
+    ax.yaxis.set_major_formatter(formatter)
+
+    if any(value <= 0 for value in count_values):
+        ax.axhline(floor_value, color="gray", linestyle="--", linewidth=1.0, alpha=0.45)
+
+    return floor_value
+
+
+def compute_log_floor_value(count_values: list[float]) -> float:
+    positive_values = [value for value in count_values if value > 0]
+    lowest_positive = min(positive_values) if positive_values else 1.0
+    return max(1.0, lowest_positive / 10.0)
+
+
+def normalize_counts_for_log_display(count_values: list[float], floor_value: float) -> list[float]:
+    return [value if value > 0 else floor_value for value in count_values]
 
 
 def mean_by_voltage(records: list[MeasurementRecord]) -> list[tuple[float, float]]:
@@ -365,29 +536,45 @@ def mean_current_by_voltage(records: list[MeasurementRecord]) -> list[tuple[floa
     ]
 
 
-def plot_voltage_count(channels: list[ChannelData], output_path: Path) -> None:
+def plot_voltage_count(channels: list[ChannelData], output_path: Path, diagram_title: str, suptitle: str) -> None:
     fig, ax = plt.subplots(figsize=(12, 7))
     palette = prepare_channel_palette([channel.channel for channel in channels])
+    plotted_counts: list[float] = []
+    plotted_voltages: list[float] = []
 
     for channel_data in channels:
         points = mean_by_voltage(channel_data.records)
         voltages = [point[0] for point in points]
         counts = [point[1] for point in points]
+        plotted_voltages.extend(voltages)
+        plotted_counts.extend(counts)
         color = palette[channel_data.channel]
         ax.scatter(voltages, counts, color=color, s=35, alpha=0.85, label=f"Ch{channel_data.channel}")
         ax.plot(voltages, counts, color=color, alpha=0.6, linewidth=1.5)
 
-    annotate_axis(ax, AXIS_VOLTAGE, AXIS_COUNT, "Feszültség - beütés diagram")
+    floor_value = prepare_log_count_axis(ax, plotted_counts)
+    for line in ax.lines:
+        line.set_ydata(normalize_counts_for_log_display(list(line.get_ydata()), floor_value))
+    for collection in ax.collections:
+        offsets = collection.get_offsets()
+        if len(offsets) == 0:
+            continue
+        offsets[:, 1] = [value if value > 0 else floor_value for value in offsets[:, 1]]
+        collection.set_offsets(offsets)
+    set_voltage_axis_ticks(ax, plotted_voltages)
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    annotate_axis(ax, AXIS_VOLTAGE, AXIS_COUNT, diagram_title)
     ax.legend(title=LEGEND_CHANNELS)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
 
-def plot_voltage_current(channels: list[ChannelData], output_path: Path) -> None:
+def plot_voltage_current(channels: list[ChannelData], output_path: Path, diagram_title: str, suptitle: str) -> None:
     fig, ax = plt.subplots(figsize=(12, 7))
     palette = prepare_channel_palette([channel.channel for channel in channels])
     plotted_any = False
+    plotted_voltages: list[float] = []
 
     for channel_data in channels:
         points = mean_current_by_voltage(channel_data.records)
@@ -396,6 +583,7 @@ def plot_voltage_current(channels: list[ChannelData], output_path: Path) -> None
         plotted_any = True
         voltages = [point[0] for point in points]
         currents = [point[1] for point in points]
+        plotted_voltages.extend(voltages)
         color = palette[channel_data.channel]
         ax.scatter(voltages, currents, color=color, s=35, alpha=0.85, label=f"Ch{channel_data.channel}")
         ax.plot(voltages, currents, color=color, alpha=0.6, linewidth=1.5)
@@ -404,17 +592,20 @@ def plot_voltage_current(channels: list[ChannelData], output_path: Path) -> None
         plt.close(fig)
         return
 
-    annotate_axis(ax, AXIS_VOLTAGE, AXIS_CURRENT, "Feszültség - áram diagram")
+    set_voltage_axis_ticks(ax, plotted_voltages)
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    annotate_axis(ax, AXIS_VOLTAGE, AXIS_CURRENT, diagram_title)
     ax.legend(title=LEGEND_CHANNELS)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
 
-def plot_current_count(channels: list[ChannelData], output_path: Path) -> None:
+def plot_current_count(channels: list[ChannelData], output_path: Path, diagram_title: str, suptitle: str) -> None:
     fig, ax = plt.subplots(figsize=(12, 7))
     palette = prepare_channel_palette([channel.channel for channel in channels])
     plotted_any = False
+    plotted_counts: list[float] = []
 
     for channel_data in channels:
         filtered_records = [record for record in channel_data.records if record.current_ma is not None]
@@ -424,22 +615,33 @@ def plot_current_count(channels: list[ChannelData], output_path: Path) -> None:
         color = palette[channel_data.channel]
         currents = [record.current_ma for record in filtered_records]
         counts = [record.count for record in filtered_records]
+        plotted_counts.extend(counts)
         ax.scatter(currents, counts, color=color, s=24, alpha=0.7, label=f"Ch{channel_data.channel}")
 
     if not plotted_any:
         plt.close(fig)
         return
 
-    annotate_axis(ax, AXIS_CURRENT, AXIS_COUNT, "Áram - beütés diagram")
+    floor_value = prepare_log_count_axis(ax, plotted_counts)
+    for collection in ax.collections:
+        offsets = collection.get_offsets()
+        if len(offsets) == 0:
+            continue
+        offsets[:, 1] = [value if value > 0 else floor_value for value in offsets[:, 1]]
+        collection.set_offsets(offsets)
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    annotate_axis(ax, AXIS_CURRENT, AXIS_COUNT, diagram_title)
     ax.legend(title=LEGEND_CHANNELS)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
 
-def plot_boxplot(channels: list[ChannelData], output_path: Path) -> None:
+def plot_boxplot(channels: list[ChannelData], output_path: Path, diagram_title: str, suptitle: str) -> None:
     fig, ax = plt.subplots(figsize=(13, 7))
     palette = prepare_channel_palette([channel.channel for channel in channels])
+    # --- plotted_counts = [record.count for channel_data in channels for record in channel_data.records] ---
+    # --- floor_value = compute_log_floor_value(plotted_counts) ---
 
     all_voltages = sorted({record.voltage for channel_data in channels for record in channel_data.records})
     if not all_voltages:
@@ -473,6 +675,7 @@ def plot_boxplot(channels: list[ChannelData], output_path: Path) -> None:
             position = voltage + offsets[channel_data.channel]
             values = [record.count for record in voltage_records]
             ax.boxplot(
+                # --- normalice_counts_for_log_display(values, floor_value) ---,
                 values,
                 positions=[position],
                 widths=box_width,
@@ -485,10 +688,21 @@ def plot_boxplot(channels: list[ChannelData], output_path: Path) -> None:
             )
 
     ax.set_xticks(all_voltages)
-    ax.set_xticklabels([f"{voltage:g}" for voltage in all_voltages])
-    annotate_axis(ax, AXIS_VOLTAGE, AXIS_COUNT, "Feszültség - beütés boxplot")
+    tick_labels = ax.set_xticklabels([f"{voltage:g}" for voltage in all_voltages])
+    style_voltage_tick_labels(tick_labels, all_voltages)
+    x_range = max(all_voltages) - min(all_voltages)
+    x_padding = max(0.05, x_range * 0.02)
+    ax.set_xlim(min(all_voltages) - x_padding, max(all_voltages) + x_padding)
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    y_formatter = ScalarFormatter()
+    y_formatter.set_scientific(False)
+    y_formatter.set_useOffset(False)
+    ax.yaxis.set_major_formatter(y_formatter)
+    # --- prepare_lock_count_axis(ax, plotted_counts) ---
+    fig.suptitle(suptitle, fontsize=14, fontweight="bold")
+    annotate_axis(ax, AXIS_VOLTAGE, AXIS_COUNT, diagram_title)
     ax.legend(handles=legend_handles, title=LEGEND_CHANNELS, loc="best")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
 
@@ -503,16 +717,56 @@ def evaluate_measurements(meresek_txt_dir: Path, meresek_csv_dir: Path, output_d
     channels = selected_group.channels
     ensure_output_dir(output_dir)
 
-    safe_prefix = selected_group.prefix.replace(".", "_")
-    voltage_count_path = output_dir / f"{safe_prefix}_feszultseg_beutes_diagram.png"
-    boxplot_path = output_dir / f"{safe_prefix}_feszultseg_beutes_dobozdiagram.png"
-    voltage_current_path = output_dir / f"{safe_prefix}_feszultseg_aram_diagram.png"
-    current_count_path = output_dir / f"{safe_prefix}_aram_beutes_diagram.png"
+    metadata_path = resolve_metadata_path(Path(__file__).resolve().parent)
+    metadata_by_prefix = load_measurement_metadata(metadata_path)
+    measurement_name = resolve_measurement_title(selected_group, metadata_by_prefix)
+    measurement_timestamp = resolve_measurement_timestamp(selected_group.prefix)
 
-    plot_voltage_count(channels, voltage_count_path)
-    plot_boxplot(channels, boxplot_path)
-    plot_voltage_current(channels, voltage_current_path)
-    plot_current_count(channels, current_count_path)
+    voltage_count_path = output_dir / build_diagram_file_name(
+        measurement_name,
+        "feszultseg_beutes",
+        measurement_timestamp,
+    )
+    boxplot_path = output_dir / build_diagram_file_name(
+        measurement_name,
+        "feszultseg_beutes_boxplot",
+        measurement_timestamp,
+    )
+    voltage_current_path = output_dir / build_diagram_file_name(
+        measurement_name,
+        "feszultseg_aram",
+        measurement_timestamp,
+    )
+    current_count_path = output_dir / build_diagram_file_name(
+        measurement_name,
+        "aram_beutes",
+        measurement_timestamp,
+    )
+
+    plot_voltage_count(
+        channels,
+        voltage_count_path,
+        build_diagram_title(measurement_name, "feszultseg_beutes", measurement_timestamp),
+        measurement_name,
+    )
+    plot_boxplot(
+        channels,
+        boxplot_path,
+        build_diagram_title(measurement_name, "feszultseg_beutes_boxplot", measurement_timestamp),
+        measurement_name,
+    )
+    plot_voltage_current(
+        channels,
+        voltage_current_path,
+        build_diagram_title(measurement_name, "feszultseg_aram", measurement_timestamp),
+        measurement_name,
+    )
+    plot_current_count(
+        channels,
+        current_count_path,
+        build_diagram_title(measurement_name, "aram_beutes", measurement_timestamp),
+        measurement_name,
+    )
 
     print(f"Elkészültek a diagramok ide: {output_dir}")
     print(f"- {voltage_count_path.name}")
