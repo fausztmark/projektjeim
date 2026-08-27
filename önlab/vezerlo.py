@@ -154,7 +154,7 @@ class MeasurementController:
             #tap.turn_channel_on_off(False, all_channels=False, channels=[ch])
             tap.ps.write(f':SOURce{ch}:VOLTage {step["fesz"]}\n')
             #tap.turn_channel_on_off(True, all_channels=False, channels=[ch])
-        time.sleep(0.5)
+        time.sleep(1)
 
     def write_measurement_samples(
         self,
@@ -486,9 +486,23 @@ class SNSPDControlGUI:
         self.root = root
         self.root.title("SNSPD Feszültség Szabályozó és Naplózó")
         self.root.geometry("980x760")
-        self.label = tk.Label(root, text="SNSPD Mérési Folyamat", font=("Arial", 14, "bold"))
+
+        self.main_canvas = tk.Canvas(root)
+        self.scrollbar = tk.Scrollbar(root, orient="vertical", command=self.main_canvas.yview)
+        self.main_canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.content_frame = tk.Frame(self.main_canvas)
+        self.canvas_window_id = self.main_canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+
+        self.main_canvas.bind("<Configure>", self._update_scroll_region)
+        self.content_frame.bind("<Configure>", self._update_scroll_region)
+        self.root.bind("<Configure>", self._update_scroll_region)
+
+        self.label = tk.Label(self.content_frame, text="SNSPD Mérési Folyamat", font=("Arial", 14, "bold"))
         self.label.pack(pady=10)
-        csatorna_keret = tk.Frame(root)
+        csatorna_keret = tk.Frame(self.content_frame)
         csatorna_keret.pack(pady=5)
         self.csatorna_valtozok = []
         self.channel_frames = {}
@@ -504,12 +518,12 @@ class SNSPDControlGUI:
             self.csatorna_valtozok.append(var)
             var.trace_add("write", lambda *_args, ch=i + 1: self.toggle_channel_config_visibility(ch))
 
-        self.channel_config_container = tk.Frame(root)
+        self.channel_config_container = tk.Frame(self.content_frame)
         self.channel_config_container.pack(fill=tk.X, padx=10, pady=10)
         for i in range(1, 5):
             self.create_channel_config_block(i)
 
-        self.settings_bar = tk.Frame(root)
+        self.settings_bar = tk.Frame(self.content_frame)
         self.settings_bar.pack(fill=tk.X, padx=10, pady=(0, 8))
         tk.Label(self.settings_bar, text="Mentés neve:", font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 6))
         self.settings_name_var = tk.StringVar(value="meresi_beallitas")
@@ -518,14 +532,14 @@ class SNSPDControlGUI:
         tk.Button(self.settings_bar, text="Beállítás mentése", command=self.save_settings).pack(side=tk.LEFT, padx=5)
         tk.Button(self.settings_bar, text="Beállítás betöltése", command=self.load_settings).pack(side=tk.LEFT, padx=5)
 
-        self.inditas_gomb = tk.Button(root, text="Mérés Indítása", command=self.start_thread, bg="green", fg="white", font=("Arial", 12))
+        self.inditas_gomb = tk.Button(self.content_frame, text="Mérés Indítása", command=self.start_thread, bg="green", fg="white", font=("Arial", 12))
         self.inditas_gomb.pack(pady=5)
 
-        self.leallitas_gomb = tk.Button(root, text="Mérés Leállítása", command=lambda: self.controller.stop(), bg="red", fg="white", font=("Arial", 12))
+        self.leallitas_gomb = tk.Button(self.content_frame, text="Mérés Leállítása", command=lambda: self.controller.stop(), bg="red", fg="white", font=("Arial", 12))
         self.leallitas_gomb.pack(pady=5)
         self.leallitas_gomb.config(state=tk.DISABLED)
 
-        self.naplo_terulet = scrolledtext.ScrolledText(root, width=70, height=15)
+        self.naplo_terulet = scrolledtext.ScrolledText(self.content_frame, width=70, height=15)
         self.naplo_terulet.pack(pady=10, padx=10)
 
         self.controller = MeasurementController(
@@ -546,6 +560,12 @@ class SNSPDControlGUI:
                 messagebox.showerror("Hiba", f"Hiba történt: {error}")
             )),
         )
+        self.root.after(50, self._update_scroll_region)
+
+    def _update_scroll_region(self, event=None):
+        self.root.update_idletasks()
+        self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
+        self.main_canvas.itemconfig(self.canvas_window_id, width=self.main_canvas.winfo_width())
 
     def create_channel_config_block(self, ch):
         frame = tk.LabelFrame(self.channel_config_container, text=f"Ch{ch} beállítások", padx=8, pady=6)

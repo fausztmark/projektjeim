@@ -1,7 +1,11 @@
-mérés neve;mérés dátuma és ideje (ez a fájlok neve);CH1;CH2;CH3;CH4;megjegyzés
+meres_neve;meres_datuma;CH1;CH2;CH3;CH4;megjegyzas
 Meres 2026.07.01_13.42;2026.07.01_13.42;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;
 Meres 2026.07.01_13.47;2026.07.01_13.47;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;
 Meres 2026.07.01_14.05;2026.07.01_14.05;3.35 V / 10.0 dB;;;;
 Meres 2026.08.05_17.40;2026.08.05_17.40;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;
 Meres 2026.08.05_17.43;2026.08.05_17.43;0.5 V / 10.0 dB;0.5 V / 10.0 dB;0.5 V / 10.0 dB;0.5 V / 10.0 dB;
-Meres 2026.08.05_17.45;2026.08.05_17.45;0.0 V / 10.0 dB;0.0 V / 10.0 dB;0.0 V / 10.0 dB;0.0 V / 10.0 dB;
+Meres 2026.08.05_17.45;2026.08.05_17.45;0.0 V / 10.0 dB;0.0 V / 10.0 dB;0.0 V / 10.0 dB;0.0 V / 10.0 dB;külső mérés
+DCR felterkepezes;2026.08.27_17.11;1.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;2.0 V / 10.0 dB;DCR feltérképezés, előtétszál sötélt kupakkal, letakarva mindkét csatlakozás
+DCR szukitett;2026.08.27_18.08;3.0 V / 10.0 dB;4.25 V / 10.0 dB;4.25 V / 10.0 dB;4.25 V / 10.0 dB;DCR specifikalt, előtétszál sötélt kupakkal, letakarva mindkét csatlakozás
+Kulteri felterkepezes;2026.08.27_18.47;1.0 V / 10.0 dB;1.0 V / 10.0 dB;1.0 V / 10.0 dB;1.0 V / 10.0 dB;CR kulteri feltérképezés, tisztan csatolva kulterbe, 2 előtétszál + hosszú
+Kulteri szukitett;2026.08.27_19.27;1.5 V / 10.0 dB;1.75 V / 10.0 dB;1.75 V / 10.0 dB;1.75 V / 10.0 dB;CR kulteri specifikalt, tisztan csatolva kulterbe, 2 előtétszál + hosszú

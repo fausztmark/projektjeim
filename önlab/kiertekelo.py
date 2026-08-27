@@ -640,12 +640,26 @@ def plot_current_count(channels: list[ChannelData], output_path: Path, diagram_t
 def plot_boxplot(channels: list[ChannelData], output_path: Path, diagram_title: str, suptitle: str) -> None:
     fig, ax = plt.subplots(figsize=(13, 7))
     palette = prepare_channel_palette([channel.channel for channel in channels])
-    # --- plotted_counts = [record.count for channel_data in channels for record in channel_data.records] ---
-    # --- floor_value = compute_log_floor_value(plotted_counts) ---
 
     all_voltages = sorted({record.voltage for channel_data in channels for record in channel_data.records})
     if not all_voltages:
         raise ValueError("Nincsenek feszültségértékek a boxplothoz.")
+
+    def percentile(values: list[float], percent: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        if len(ordered) == 1:
+            return float(ordered[0])
+        index = (len(ordered) - 1) * (percent / 100.0)
+        lower = math.floor(index)
+        upper = math.ceil(index)
+        lower_value = ordered[lower]
+        upper_value = ordered[upper]
+        if lower == upper:
+            return float(lower_value)
+        fraction = index - lower
+        return float(lower_value + (upper_value - lower_value) * fraction)
 
     channel_count = len(channels)
     if channel_count == 1:
@@ -672,20 +686,32 @@ def plot_boxplot(channels: list[ChannelData], output_path: Path, diagram_title: 
             if not voltage_records:
                 continue
 
+            values = sorted(record.count for record in voltage_records)
+            q1 = percentile(values, 25)
+            q3 = percentile(values, 75)
+            median_value = median(values)
+            low = min(values)
+            high = max(values)
             position = voltage + offsets[channel_data.channel]
-            values = [record.count for record in voltage_records]
-            ax.boxplot(
-                # --- normalice_counts_for_log_display(values, floor_value) ---,
-                values,
-                positions=[position],
-                widths=box_width,
-                patch_artist=True,
-                showfliers=False,
-                boxprops={"facecolor": color, "alpha": 0.55, "edgecolor": "black"},
-                medianprops={"color": "black", "linewidth": 1.4},
-                whiskerprops={"color": color, "linewidth": 1.1},
-                capprops={"color": color, "linewidth": 1.1},
+
+            ax.errorbar(
+                [position],
+                [median_value],
+                yerr=[[median_value - low], [high - median_value]],
+                fmt='o',
+                markersize=5,
+                markerfacecolor=color,
+                markeredgecolor="black",
+                markeredgewidth=0.8,
+                ecolor=color,
+                elinewidth=1.8,
+                capsize=5,
+                alpha=0.9,
+                zorder=4,
             )
+            ax.vlines(position, q1, q3, color=color, linewidth=3.0, zorder=3)
+            ax.hlines([q1, q3], position - box_width * 0.7, position + box_width * 0.7, color=color, linewidth=2.0, zorder=3)
+            ax.plot([position - box_width * 0.7, position + box_width * 0.7], [median_value, median_value], color="black", linewidth=1.3, zorder=3)
 
     ax.set_xticks(all_voltages)
     tick_labels = ax.set_xticklabels([f"{voltage:g}" for voltage in all_voltages])
@@ -698,7 +724,6 @@ def plot_boxplot(channels: list[ChannelData], output_path: Path, diagram_title: 
     y_formatter.set_scientific(False)
     y_formatter.set_useOffset(False)
     ax.yaxis.set_major_formatter(y_formatter)
-    # --- prepare_lock_count_axis(ax, plotted_counts) ---
     fig.suptitle(suptitle, fontsize=14, fontweight="bold")
     annotate_axis(ax, AXIS_VOLTAGE, AXIS_COUNT, diagram_title)
     ax.legend(handles=legend_handles, title=LEGEND_CHANNELS, loc="best")
